@@ -1,97 +1,104 @@
-# Oloráculo
+# Oloraculo
 
-Oloráculo is a .NET 9 Blazor Server application that predicts the 2026 FIFA World Cup. It layers several statistical predictors into a "model ladder", picks the strongest usable model for each fixture, and runs a Monte Carlo simulation of the full tournament to estimate every team's chances of advancing and lifting the trophy.
+Oloraculo is a .NET 9 Blazor Server app for predicting the 2026 FIFA World Cup. It builds predictions as a small model ladder, explains which model was used, and can run a Monte Carlo simulation of the full tournament.
 
-## Features
+## What It Does
 
-- Layered model ladder, evaluated in priority order and selected by `Oloraculo.Web/Predictors/FinalPredictionSelector.cs`:
-  - Null baseline (uniform outcome)
-  - FIFA ranking model
-  - Elo model
-  - Recent form model
-  - Poisson goal model (scoreline distribution)
-  - Goal + recent context model (player availability, lineups, odds awareness)
-- Highest usable rung selection: the Final Oracle uses the most informative model that is not degraded, and explains which higher rungs it skipped (if any) and why.
-- Monte Carlo tournament simulation (`Oloraculo.Web/Services/Simulation/SimulationService.cs`) producing per-team group, qualification, and championship probabilities. Repeatable when a seed is configured.
-- Snapshot, evaluation, and performance tracking so predictions can be scored against actual results over time.
-- Uses API-Football to retrieve fixtures, injuries, lineups, and odds, if available (`Oloraculo.Web/Services/ApiFootballService.cs`), and degrades into static-file only if missing.
-- Blazor pages (see `Oloraculo.Web/Components/Layout/NavMenu.razor`): Overview, Oracle Lab, Matches, Tournament, Performance, and Data.
+- Imports seed data from CSV files: groups, historical results, FIFA rankings, and Elo ratings.
+- Builds match predictions through layered models:
+  - uniform baseline
+  - FIFA ranking
+  - Elo
+  - recent form
+  - Poisson scoreline model with a Dixon-Coles-style low-score adjustment
+  - goal model adjusted by recent context and player availability when available
+- Selects the highest usable model as the final oracle, with notes about missing or skipped signals.
+- Runs a repeatable Monte Carlo tournament simulation and stores tournament snapshots.
+- Saves match predictions and evaluates them later with Brier score, RPS, log loss, and top-pick accuracy.
+- Optionally refreshes rankings, API-Football fixture/context data, and availability news classified through OpenRouter.
 
-## Tech stack
+## Tech Stack
 
 - .NET 9
-- Blazor Server (interactive server components)
-- Entity Framework Core 9 with SQLite
-- CsvHelper for seed-data import
-- xUnit for tests
+- Blazor Server with MudBlazor
+- Entity Framework Core 9
+- SQLite
+- CsvHelper
+- xUnit
 
-## Project structure
+## Main Screens
 
-```
+- `/` - overview and model ladder
+- `/lab` - compare two teams across the prediction ladder
+- `/matches` - group-stage fixtures, prediction snapshots, context refresh, and result entry
+- `/fixture` - full fixture view
+- `/tournament` - run the Monte Carlo tournament simulation
+- `/tournament/snapshots` - inspect saved tournament projections
+- `/performance` - prediction evaluation metrics
+- `/data` - CSV import, rankings refresh, API-Football refresh, and availability refresh
+
+## Project Structure
+
+```text
 Oloraculo.sln
-Oloraculo.Web/                 Blazor Server app
-  Components/                  Razor pages, layout, and shared UI
-  DAL/                         OloraculoDbContext (EF Core)
-  Data/                        CSV seed data
-  Helpers/                     CSV parsing, team-name normalization, crypto
-  Models/                      Domain, CSV, and API-Football models
-  Predictors/                  Model ladder and final selector
-  Probability/                 Poisson scoreline and outcome math
-  Services/                    Import, prediction, evaluation, snapshot
-    Simulation/               Tournament Monte Carlo engine
-  OloraculoConfig.cs           Strongly typed configuration
-  Program.cs                   App startup and DI
-Oloraculo.Web.Tests/           xUnit test project
+Oloraculo.Web/
+  Components/          Blazor pages, layout, and shared UI
+  DAL/                 EF Core DbContext
+  Data/                CSV seed data and video notes
+  Helpers/             CSV parsing, team-name normalization, crypto helpers
+  Models/              Domain, CSV, API-Football, snapshot, and evaluation models
+  Predictors/          Model ladder and final selector
+  Probability/         Outcome, scoreline, and tournament probability math
+  Services/            Import, prediction, rankings, API, availability, snapshots, evaluation
+    Simulation/        World Cup bracket and Monte Carlo engine
+Oloraculo.Web.Tests/   xUnit tests
 ```
 
-## Getting started
+## Getting Started
 
 Prerequisites:
 
 - .NET 9 SDK
 
-Restore and run:
+Run the app:
 
 ```bash
 dotnet restore
 dotnet run --project Oloraculo.Web
 ```
 
-On first run the SQLite database is created automatically and the seed CSVs are imported (via `Oloraculo.Web/Services/CsvImportService.cs`), so no manual database setup is required.
+The SQLite database is created automatically on startup, and the CSV seed data is imported when needed.
 
 ## Configuration
 
-Application settings live under the `Oloraculo` section (bound to `Oloraculo.Web/OloraculoConfig.cs`):
+Settings live in `Oloraculo.Web/appsettings.json` under the `Oloraculo` section.
 
+Important keys:
 
-| Key                    | Description                                             |
-| ---------------------- | ------------------------------------------------------- |
-| `SimulationCount`      | Number of Monte Carlo tournament simulations to run     |
-| `SimulationSeed`       | Optional seed for repeatable simulations                |
-| `RecentResultCount`    | How many recent matches the recent-form model considers |
-| `GoalModelYearsWindow` | Year window used by the Poisson goal model              |
-| `ApiFootballBaseUrl`   | Base URL for the API-Football service                   |
-| `ApiFootballApiKey`    | API-Football key (do not commit this, see below)        |
-| `ApiFootballLeagueId`  | League id used when fetching fixtures                   |
-| `ApiFootballSeason`    | Season used when fetching fixtures                      |
+- `SimulationCount` and `SimulationSeed`
+- `RecentResultCount`
+- `GoalModelYearsWindow`
+- `RankingRefreshOnStartup`
+- `FifaRankingsRawUrl`
+- `EloRankingsBaseUrl`
+- `ApiFootballApiKey`
+- `OpenRouterApiKey`
+- `AvailabilitySourceUrls`
 
-
-The API-Football key belongs in `appsettings.Development.json` (which is gitignored) or in .NET user-secrets.
+Keep secrets such as API-Football and OpenRouter keys in `appsettings.Development.json` or user secrets.
 
 ## Testing
-
-To run the xUnit suite:
 
 ```bash
 dotnet test
 ```
 
-## Data sources
+## Data Sources
 
-Seed data is stored as CSV files in `Oloraculo.Web/Data`:
+CSV seed data lives in `Oloraculo.Web/Data`:
 
-- `historical_results.csv` (past international match results, retrieved once from [https://raw.githubusercontent.com/martj42/international_results/master/results.csv](https://raw.githubusercontent.com/martj42/international_results/master/results.csv))
-- `fifa_rankings.csv` (FIFA ranking snapshot)
-- `elo_snapshot.csv` (Elo rating snapshot)
-- `wc2026_groups.csv` (2026 World Cup group draw)
+- `wc2026_groups.csv`
+- `historical_results.csv`
+- `fifa_rankings.csv`
+- `elo_snapshot.csv`
 

@@ -40,6 +40,37 @@ public class PredictorTests : TestFixtures
     }
 
     [Fact]
+    public void GoalModel_ExtremeHistoryKeepsExpectedGoalsBoundedAndValid()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var results = Enumerable.Range(0, 6)
+            .Select(i => new MatchResult
+            {
+                Id = $"extreme-{i}",
+                HomeTeamId = "a",
+                AwayTeamId = "b",
+                HomeGoals = 20,
+                AwayGoals = 0,
+                Date = now.AddDays(-i),
+                Tournament = "test",
+                Neutral = true,
+                Source = "test"
+            })
+            .ToList();
+        var model = new GoalModel(results);
+
+        var (homeGoals, awayGoals, degraded) = model.ExpectedGoals(TestContext());
+        var prediction = model.Predict(TestContext());
+
+        Assert.False(degraded);
+        Assert.InRange(homeGoals, 0.1, 5.5);
+        Assert.InRange(awayGoals, 0.1, 5.5);
+        Assert.True(double.IsFinite(homeGoals));
+        Assert.True(double.IsFinite(awayGoals));
+        Assert.True(prediction.Outcome.IsValid);
+    }
+
+    [Fact]
     public void ContextModel_DoesNotClaimLineupsOrOddsWereUsedWithoutConversionLogic()
     {
         var goal = new GoalModel(

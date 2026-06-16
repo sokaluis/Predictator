@@ -10,6 +10,9 @@ namespace Oloraculo.Web.Predictors
         private const double GoalScale = 1.10;
         private const double LowScoreRho = 0.00;
         private const double HomeAdvantageMultiplier = 1.08;
+        // Sanity-checked against bundled historical results; rerun tooling/goal_strength_calibration.py when revisiting.
+        private const double GoalStrengthMinMultiplier = 0.25;
+        private const double GoalStrengthMaxMultiplier = 3.5;
         private const int MinimumTeamMatches = 3;
         private const int Iterations = 8;
 
@@ -162,15 +165,15 @@ namespace Oloraculo.Web.Predictors
 
             var map = teams.ToDictionary(team => team, team => new GoalStrength
             {
-                Attack = Math.Clamp(attacks[team], 0.45, 2.25),
-                DefenseVulnerability = Math.Clamp(vulnerabilities[team], 0.45, 2.25),
+                Attack = Math.Clamp(attacks[team], GoalStrengthMinMultiplier, GoalStrengthMaxMultiplier),
+                DefenseVulnerability = Math.Clamp(vulnerabilities[team], GoalStrengthMinMultiplier, GoalStrengthMaxMultiplier),
                 Matches = matches[team]
             });
 
             return (map, avg, window.Count);
 
             static double ShrinkToNeutral(double value, double weight) =>
-                Math.Clamp(((value * weight) + PriorMatches) / (weight + PriorMatches), 0.45, 2.25);
+                Math.Clamp(((value * weight) + PriorMatches) / (weight + PriorMatches), GoalStrengthMinMultiplier, GoalStrengthMaxMultiplier);
 
             static void NormalizeMean(Dictionary<string, double> values)
             {

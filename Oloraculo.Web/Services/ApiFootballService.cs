@@ -4,6 +4,7 @@ using Oloraculo.Web.DAL;
 using Oloraculo.Web.Helpers;
 using Oloraculo.Web.Models;
 using Oloraculo.Web.Models.ApiFootballModels;
+using System.Text.Json;
 
 namespace Oloraculo.Web.Services
 {
@@ -173,6 +174,7 @@ namespace Oloraculo.Web.Services
             {
                 var response = await _http.GetFromJsonAsync<ApiFixtureResponse>(
                     ApiFootballEndpoints.Fixtures(_config.ApiFootballLeagueId, _config.ApiFootballSeason), ct);
+                errors.AddRange(ApiFootballErrors(response?.Errors).Select(error => $"partidos: {error}"));
                 var items = response?.Response ?? [];
                 var local = await _db.Fixtures.ToListAsync(ct);
                 var byPair = local.ToDictionary(f => PairKey(f.HomeTeamId, f.AwayTeamId));
@@ -223,7 +225,7 @@ namespace Oloraculo.Web.Services
                 notes.Add($"Se obtuvieron {items.Count} filas de partidos y se matchearon {matched} partidos locales de fase de grupos.");
                 if (unmatchedPairs.Count > 0)
                     notes.Add($"No se matchearon {unmatchedPairs.Count} filas API contra partidos locales: {string.Join("; ", unmatchedPairs.Take(10))}{(unmatchedPairs.Count > 10 ? "; ..." : "")}");
-                return new ApiFootballRefreshReport { IsConfigured = true, FixturesFetched = items.Count, FixturesMatched = matched, Notes = notes };
+                return new ApiFootballRefreshReport { IsConfigured = true, FixturesFetched = items.Count, FixturesMatched = matched, Notes = notes, Errors = errors };
             }
             catch (Exception ex)
             {
@@ -480,6 +482,34 @@ namespace Oloraculo.Web.Services
         }
 
         private static string PairKey(string a, string b) => string.CompareOrdinal(a, b) <= 0 ? $"{a}|{b}" : $"{b}|{a}";
+
+        private static IReadOnlyList<string> ApiFootballErrors(JsonElement? errors)
+        {
+            if (errors is null || errors.Value.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+                return [];
+
+            if (errors.Value.ValueKind == JsonValueKind.Object)
+            {
+                return errors.Value.EnumerateObject()
+                    .Select(error => string.IsNullOrWhiteSpace(error.Name)
+                        ? error.Value.ToString()
+                        : $"{error.Name}: {error.Value}")
+                    .Where(error => !string.IsNullOrWhiteSpace(error))
+                    .ToList();
+            }
+
+            if (errors.Value.ValueKind == JsonValueKind.Array)
+            {
+                return errors.Value.EnumerateArray()
+                    .Select(error => error.ToString())
+                    .Where(error => !string.IsNullOrWhiteSpace(error))
+                    .ToList();
+            }
+
+            var singleError = errors.Value.ToString();
+            return string.IsNullOrWhiteSpace(singleError) ? [] : [singleError];
+        }
+
         private static IReadOnlyList<ApiInjury> MergeRelevantInjuries(Fixture fixture, IEnumerable<ApiInjury> fixtureInjuries, IEnumerable<ApiInjury> leagueInjuries)
         {
             var relevant = new Dictionary<string, ApiInjury>();

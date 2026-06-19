@@ -29,6 +29,7 @@ builder.Services.AddScoped<EvaluationService>();
 builder.Services.AddScoped<SnapshotService>();
 builder.Services.AddScoped<SimulationService>();
 builder.Services.AddScoped<ReadmeSnapshotExportService>();
+builder.Services.AddScoped<ExternalDataStatusService>();
 builder.Services.AddHttpClient<PlayerImpactService>((sp, client) =>
 {
     var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<OloraculoConfig>>().Value;

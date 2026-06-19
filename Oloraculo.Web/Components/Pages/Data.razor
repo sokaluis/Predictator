@@ -4,6 +4,7 @@
 @inject RankingRefreshService Rankings
 @inject ApiFootballService Api
 @inject AvailabilityNewsService Availability
+@inject ExternalDataStatusService ExternalDataStatus
 @inject OloraculoDbContext Db
 @inject ISnackbar Snackbar
 
@@ -54,7 +55,7 @@
             <MudAlert Class="mt-2" Severity="@(_apiReport.Errors.Count > 0 ? Severity.Warning : Severity.Info)" Variant="Variant.Outlined">Impactos API enriquecidos: @_apiReport.ImpactMatchedPlayers. Fallback por posición: @_apiReport.ImpactFallbackPlayers. @string.Join(" ", _apiReport.Notes)</MudAlert>
             @foreach (var error in _apiReport.Errors)
             {
-                <MudAlert Class="mt-2" Severity="Severity.Warning" Variant="Variant.Outlined">@error</MudAlert>
+                <MudAlert Class="mt-2" Severity="Severity.Warning" Variant="Variant.Outlined">Error de proveedor/acceso: @error</MudAlert>
             }
         }
         @if (_availabilityReport is not null)
@@ -77,6 +78,49 @@
                 <MudAlert Class="mt-2" Severity="Severity.Warning" Variant="Variant.Outlined">@error</MudAlert>
             }
         }
+    </MudPaper>
+
+    <MudPaper Class="surface-card external-status" Elevation="0">
+        <MudStack Spacing="2">
+            <div class="external-status-head">
+                <div>
+                    <MudText Typo="Typo.h6">Estado de datos externos</MudText>
+                    <MudText Typo="Typo.body2" Class="explain">Muestra configuración, filas persistidas y señales que hoy pueden enriquecer predicciones.</MudText>
+                </div>
+                <MudChip T="string" Size="Size.Small" Color="@StatusColor" Variant="Variant.Outlined">@StatusLabel</MudChip>
+            </div>
+
+            @if (_externalStatus is null)
+            {
+                <MudSkeleton Height="34px" Class="skeleton-row" />
+            }
+            else
+            {
+                <MudAlert Severity="@StatusSeverity" Variant="Variant.Outlined">@_externalStatus.Summary</MudAlert>
+
+                <div class="external-status-grid" aria-label="Resumen de datos externos">
+                    <div class="external-status-item"><MudText Typo="Typo.caption">API-Football</MudText><MudText Typo="Typo.body2">@ConfiguredText(_externalStatus.ApiFootballConfigured)</MudText></div>
+                    <div class="external-status-item"><MudText Typo="Typo.caption">OpenRouter</MudText><MudText Typo="Typo.body2">@ConfiguredText(_externalStatus.OpenRouterConfigured)</MudText></div>
+                    <div class="external-status-item"><MudText Typo="Typo.caption">ApiMappings</MudText><MudText Typo="Typo.body2">@_externalStatus.ApiMappings</MudText></div>
+                    <div class="external-status-item"><MudText Typo="Typo.caption">FixtureContexts</MudText><MudText Typo="Typo.body2">@_externalStatus.FixtureContexts</MudText></div>
+                    <div class="external-status-item"><MudText Typo="Typo.caption">AvailabilitySources</MudText><MudText Typo="Typo.body2">@_externalStatus.AvailabilitySources</MudText></div>
+                    <div class="external-status-item"><MudText Typo="Typo.caption">AvailabilityClaims</MudText><MudText Typo="Typo.body2">@_externalStatus.AvailabilityClaims</MudText></div>
+                    <div class="external-status-item"><MudText Typo="Typo.caption">Con noticias</MudText><MudText Typo="Typo.body2">@_externalStatus.ContextsWithAvailabilityNews</MudText></div>
+                    <div class="external-status-item"><MudText Typo="Typo.caption">Con alineaciones</MudText><MudText Typo="Typo.body2">@_externalStatus.ContextsWithLineups</MudText></div>
+                    <div class="external-status-item"><MudText Typo="Typo.caption">Con cuotas</MudText><MudText Typo="Typo.body2">@_externalStatus.ContextsWithOdds</MudText></div>
+                </div>
+
+                @if (!string.IsNullOrWhiteSpace(_externalStatus.AccessValidationNote))
+                {
+                    <MudText Typo="Typo.body2" Class="explain">@_externalStatus.AccessValidationNote</MudText>
+                }
+
+                @foreach (var error in _externalStatus.LatestProviderErrors)
+                {
+                    <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined">Error de proveedor/acceso del último refresh: @error</MudAlert>
+                }
+            }
+        </MudStack>
     </MudPaper>
 
     <MudGrid Spacing="2">
@@ -127,6 +171,7 @@
     private int _teams;
     private int _fixtures;
     private int _ratings;
+    private ExternalDataStatus? _externalStatus;
     private List<Rating> _ratingRows = [];
     private Dictionary<string, string> _names = [];
     private string _error = "";
@@ -229,9 +274,36 @@
         _teams = await Db.Teams.CountAsync();
         _fixtures = await Db.Fixtures.CountAsync();
         _ratings = await Db.Ratings.CountAsync();
+        _externalStatus = await ExternalDataStatus.GetAsync(_apiReport);
         _names = await Db.Teams.ToDictionaryAsync(t => t.Id, t => t.Name);
         _ratingRows = await Db.Ratings.OrderByDescending(r => r.Value).Take(40).ToListAsync();
     }
 
     private string Name(string id) => _names.TryGetValue(id, out var name) ? name : id;
+
+    private string ConfiguredText(bool configured) => configured ? "Configurado" : "No configurado";
+
+    private Severity StatusSeverity => _externalStatus?.Tone switch
+    {
+        ExternalDataStatusTone.Success => Severity.Success,
+        ExternalDataStatusTone.Error => Severity.Error,
+        ExternalDataStatusTone.Info => Severity.Info,
+        _ => Severity.Warning
+    };
+
+    private Color StatusColor => _externalStatus?.Tone switch
+    {
+        ExternalDataStatusTone.Success => Color.Success,
+        ExternalDataStatusTone.Error => Color.Error,
+        ExternalDataStatusTone.Info => Color.Info,
+        _ => Color.Warning
+    };
+
+    private string StatusLabel => _externalStatus?.Tone switch
+    {
+        ExternalDataStatusTone.Success => "Enriquecido",
+        ExternalDataStatusTone.Error => "Degradado",
+        ExternalDataStatusTone.Info => "Informativo",
+        _ => "Revisar"
+    };
 }

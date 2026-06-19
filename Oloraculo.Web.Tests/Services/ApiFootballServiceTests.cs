@@ -194,6 +194,31 @@ public class ApiFootballServiceTests : TestFixtures
     }
 
     [Fact]
+    public async Task ApiFootball_RefreshFixturesReportsApiFootballErrors()
+    {
+        await using var db = await NewDb();
+        db.Fixtures.Add(new Fixture { Id = "f1", Group = "A", HomeTeamId = "argentina", AwayTeamId = "france" });
+        await db.SaveChangesAsync();
+        var handler = new FakeHttpMessageHandler(new Dictionary<string, string>
+        {
+            [$"https://api.test/{ApiFootballEndpoints.Fixtures(1, 2026)}"] = """
+                {
+                  "errors": { "plan": "Free plans do not have access to this season." },
+                  "response": []
+                }
+                """
+        });
+        var api = ApiService(db, handler);
+
+        var report = await api.RefreshFixturesAsync();
+
+        Assert.Equal(0, report.FixturesFetched);
+        Assert.Equal(0, report.FixturesMatched);
+        Assert.Contains(report.Errors, error => error.Contains("plan", StringComparison.OrdinalIgnoreCase));
+        Assert.Empty(await db.ApiMappings.ToListAsync());
+    }
+
+    [Fact]
     public async Task ApiFootball_RoleEnrichmentUpdatesClaimsWithoutDeletingEvidence()
     {
         await using var db = await NewDb();

@@ -16,6 +16,7 @@
         public string EloRankingsBaseUrl { get; set; } = "https://www.international-football.net/elo-ratings-table";
         public string RankingRefreshUserAgent { get; set; } = "Oloraculo";
         public string GoalscorersRawUrl { get; set; } = "https://raw.githubusercontent.com/martj42/international_results/refs/heads/master/goalscorers.csv";
+        public int GoalscorersRefreshMaxAgeDays { get; set; } = 7;
         public int GoalscorerLookbackYears { get; set; } = 6;
         public string OpenRouterBaseUrl { get; set; } = "https://openrouter.ai/api/v1/";
         public string? OpenRouterApiKey { get; set; }

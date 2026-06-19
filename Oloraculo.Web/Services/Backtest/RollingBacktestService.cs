@@ -96,16 +96,23 @@ public sealed class RollingBacktestService
         strategies ??= DefaultComparisonStrategies(goalModelYearsWindow);
 
         var evaluations = new List<PredictionEvaluation>();
+        var segmentedEvaluations = new List<(string SegmentName, PredictionEvaluation Evaluation)>();
+
         foreach (var strategy in strategies)
         {
             foreach (var point in BuildPredictionPoints(results, strategy, minimumPriorMatchesPerTeam, targetFilter))
             {
                 var evaluation = ToEvaluation(point.Target, point.Prediction);
                 evaluations.Add(evaluation);
+                segmentedEvaluations.Add((BacktestMatchSegmentClassifier.AllMatches, evaluation));
+                segmentedEvaluations.Add((BacktestMatchSegmentClassifier.Classify(point.Target.Tournament), evaluation));
             }
         }
 
-        return new BacktestComparisonResult(evaluations, Summarize(evaluations));
+        return new BacktestComparisonResult(evaluations, Summarize(evaluations))
+        {
+            SegmentSummaries = SummarizeSegments(segmentedEvaluations)
+        };
     }
 
     public static IReadOnlyList<MatchResult> OrderByDate(IEnumerable<MatchResult> results) =>
@@ -214,6 +221,29 @@ public sealed class RollingBacktestService
             .ThenBy(summary => summary.ModelName, StringComparer.Ordinal)
             .ToList();
 
+    private static IReadOnlyList<BacktestSegmentModelSummary> SummarizeSegments(
+        IReadOnlyList<(string SegmentName, PredictionEvaluation Evaluation)> segmentedEvaluations) =>
+        segmentedEvaluations
+            .GroupBy(item => item.SegmentName)
+            .SelectMany(segmentGroup => Summarize(segmentGroup.Select(item => item.Evaluation).ToList())
+                .Select(summary => new BacktestSegmentModelSummary(segmentGroup.Key, summary)))
+            .OrderBy(summary => SegmentOrder(summary.SegmentName))
+            .ThenBy(summary => summary.Summary.MeanBrier)
+            .ThenBy(summary => summary.Summary.MeanLogLoss)
+            .ThenBy(summary => summary.Summary.ModelName, StringComparer.Ordinal)
+            .ToList();
+
+    private static int SegmentOrder(string segmentName)
+    {
+        for (var index = 0; index < BacktestMatchSegmentClassifier.OrderedSegments.Count; index++)
+        {
+            if (string.Equals(BacktestMatchSegmentClassifier.OrderedSegments[index], segmentName, StringComparison.Ordinal))
+                return index;
+        }
+
+        return BacktestMatchSegmentClassifier.OrderedSegments.Count;
+    }
+
     private static int CountTeamMatches(IEnumerable<MatchResult> results, string teamId) =>
         results.Count(result => result.HomeTeamId == teamId || result.AwayTeamId == teamId);
 
@@ -263,7 +293,10 @@ public sealed class BacktestRatingSnapshotProvider : IBacktestRatingSnapshotProv
 
 public sealed record BacktestComparisonResult(
     IReadOnlyList<PredictionEvaluation> Evaluations,
-    IReadOnlyList<BacktestModelSummary> Summaries);
+    IReadOnlyList<BacktestModelSummary> Summaries)
+{
+    public IReadOnlyList<BacktestSegmentModelSummary> SegmentSummaries { get; init; } = [];
+}
 
 public sealed record BacktestModelSummary(
     string ModelName,
@@ -272,3 +305,7 @@ public sealed record BacktestModelSummary(
     double MeanLogLoss,
     double MeanRps,
     double TopPickAccuracy);
+
+public sealed record BacktestSegmentModelSummary(
+    string SegmentName,
+    BacktestModelSummary Summary);

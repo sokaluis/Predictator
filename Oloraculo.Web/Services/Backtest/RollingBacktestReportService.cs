@@ -27,7 +27,8 @@ public sealed class RollingBacktestReportService
 
         return new BacktestReport(loadResult, comparison.Summaries)
         {
-            Options = options
+            Options = options,
+            SegmentSummaries = FilterSegmentSummaries(comparison.SegmentSummaries, options)
         };
     }
 
@@ -107,9 +108,25 @@ public sealed class RollingBacktestReportService
             lines.Insert(6, $"Evaluation window: {from} to {to}");
         }
 
+        if (report.Options.Segment is not null)
+            lines.Insert(6, $"Segment: {report.Options.Segment}");
+
         lines.AddRange(report.Summaries.Select(summary => string.Create(
             CultureInfo.InvariantCulture,
             $"| {summary.ModelName} | {summary.Count} | {summary.MeanBrier:0.0000} | {summary.MeanLogLoss:0.0000} | {summary.MeanRps:0.0000} | {summary.TopPickAccuracy:P1} |")));
+
+        if (report.SegmentSummaries.Count > 0)
+        {
+            lines.Add("");
+            lines.Add("## Performance by match type");
+            lines.Add("");
+            lines.Add("| Segment | Model | Count | MeanBrier | MeanLogLoss | MeanRPS | TopPickAccuracy |");
+            lines.Add("| --- | --- | ---: | ---: | ---: | ---: | ---: |");
+            lines.AddRange(report.SegmentSummaries.Select(segment => string.Create(
+                CultureInfo.InvariantCulture,
+                $"| {segment.SegmentName} | {segment.Summary.ModelName} | {segment.Summary.Count} | {segment.Summary.MeanBrier:0.0000} | {segment.Summary.MeanLogLoss:0.0000} | {segment.Summary.MeanRps:0.0000} | {segment.Summary.TopPickAccuracy:P1} |")));
+
+        }
 
         return string.Join(Environment.NewLine, lines);
     }
@@ -136,9 +153,29 @@ public sealed class RollingBacktestReportService
                 options = options with { MinimumPriorMatchesPerTeam = minimumValue };
             else if (TryReadValue(arg, "--goal-window-years", out var window) && int.TryParse(window, NumberStyles.Integer, CultureInfo.InvariantCulture, out var windowValue))
                 options = options with { GoalModelYearsWindow = windowValue };
+            else if (TryReadValue(arg, "--segment", out var segment))
+                options = options with { Segment = ParseSegment(segment) };
         }
 
         return options;
+    }
+
+    public static string ParseSegment(string value)
+    {
+        var normalized = NormalizeSegmentValue(value);
+        var segment = normalized switch
+        {
+            "all" or "all-matches" => BacktestMatchSegmentClassifier.AllMatches,
+            "friendlies" or "friendly" => BacktestMatchSegmentClassifier.Friendlies,
+            "world-cup-qualifiers" or "wc-qualifiers" or "qualifiers" => BacktestMatchSegmentClassifier.WorldCupQualifiers,
+            "world-cup-finals" or "wc-finals" or "world-cup" => BacktestMatchSegmentClassifier.WorldCupFinals,
+            "other-official" or "official" or "other" or "other-official-tournaments" => BacktestMatchSegmentClassifier.OtherOfficialTournaments,
+            _ => null
+        };
+
+        return segment ?? throw new ArgumentException(
+            $"Unknown --segment value '{value}'. Accepted values: all, friendlies, world-cup-qualifiers, world-cup-finals, other-official.",
+            nameof(value));
     }
 
     public static string ResolveDefaultHistoricalResultsPath()
@@ -201,8 +238,32 @@ public sealed class RollingBacktestReportService
         if (options.EvaluateTo is not null && result.Date > options.EvaluateTo.Value)
             return false;
 
+        if (options.Segment is not null &&
+            !string.Equals(options.Segment, BacktestMatchSegmentClassifier.AllMatches, StringComparison.Ordinal) &&
+            !string.Equals(BacktestMatchSegmentClassifier.Classify(result.Tournament), options.Segment, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
         return true;
     }
+
+    private static IReadOnlyList<BacktestSegmentModelSummary> FilterSegmentSummaries(
+        IReadOnlyList<BacktestSegmentModelSummary> summaries,
+        BacktestReportOptions options) =>
+        options.Segment is null
+            ? summaries
+            : summaries
+                .Where(summary => string.Equals(summary.SegmentName, options.Segment, StringComparison.Ordinal))
+                .ToList();
+
+    private static string NormalizeSegmentValue(string value) =>
+        string.Join(
+            '-',
+            value
+                .Trim()
+                .ToLowerInvariant()
+                .Split([' ', '_', '-'], StringSplitOptions.RemoveEmptyEntries));
 
     private static bool TryReadValue(string arg, string name, out string value)
     {
@@ -224,6 +285,7 @@ public sealed record BacktestReportOptions(
     DateTimeOffset? To = null,
     DateTimeOffset? EvaluateFrom = null,
     DateTimeOffset? EvaluateTo = null,
+    string? Segment = null,
     string? Tournament = null,
     int? Take = null,
     int MinimumPriorMatchesPerTeam = 1,
@@ -242,4 +304,5 @@ public sealed record BacktestReport(
     IReadOnlyList<BacktestModelSummary> Summaries)
 {
     public BacktestReportOptions Options { get; init; } = new();
+    public IReadOnlyList<BacktestSegmentModelSummary> SegmentSummaries { get; init; } = [];
 }

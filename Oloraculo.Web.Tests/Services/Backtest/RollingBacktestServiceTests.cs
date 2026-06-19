@@ -223,6 +223,33 @@ public class RollingBacktestServiceTests
     }
 
     [Fact]
+    public void Compare_SegmentSummariesUseTargetTournamentWithoutFilteringPriorHistory()
+    {
+        var seen = new Dictionary<string, List<string[]>>();
+        var results = new[]
+        {
+            Result("friendly-prior-a", "c", "a", "2024-01-01", 1, 1, tournament: "Friendly"),
+            Result("friendly-prior-b", "b", "c", "2024-01-01", 2, 0, tournament: "Friendly"),
+            Result("world-cup-target", "a", "b", "2024-01-02", 1, 0, tournament: "FIFA World Cup")
+        };
+
+        var comparison = new RollingBacktestService().Compare(
+            results,
+            [RecordingStrategy("recording", seen)],
+            minimumPriorMatchesPerTeam: 1);
+
+        var evaluation = Assert.Single(comparison.Evaluations);
+        Assert.Equal("backtest:world-cup-target", evaluation.FixtureId);
+        Assert.Equal(["friendly-prior-a", "friendly-prior-b"], seen["backtest:world-cup-target"][0]);
+        Assert.Contains(comparison.SegmentSummaries, summary =>
+            summary.SegmentName == BacktestMatchSegmentClassifier.WorldCupFinals &&
+            summary.Summary.ModelName == "recording" &&
+            summary.Summary.Count == 1);
+        Assert.DoesNotContain(comparison.SegmentSummaries, summary =>
+            summary.SegmentName == BacktestMatchSegmentClassifier.Friendlies);
+    }
+
+    [Fact]
     public void Compare_CacheableDefaultStrategiesMatchUncachedReferenceMetrics()
     {
         var results = new[]

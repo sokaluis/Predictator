@@ -162,11 +162,12 @@ namespace Oloraculo.Web.Services
         private async Task<string?> ReadGoalscorersCsvAsync(CancellationToken ct)
         {
             var path = Path.Combine(_environment.ContentRootPath, "Data", OloraculoDataFiles.GoalscorersCsv);
-            if (File.Exists(path))
+            var localFileExists = File.Exists(path);
+            if (localFileExists && !IsGoalscorersCsvStale(path))
                 return await File.ReadAllTextAsync(path, ct);
 
             if (string.IsNullOrWhiteSpace(_config.GoalscorersRawUrl))
-                return null;
+                return localFileExists ? await File.ReadAllTextAsync(path, ct) : null;
 
             try
             {
@@ -177,8 +178,15 @@ namespace Oloraculo.Web.Services
             }
             catch
             {
-                return null;
+                return localFileExists ? await File.ReadAllTextAsync(path, ct) : null;
             }
+        }
+
+        private bool IsGoalscorersCsvStale(string path)
+        {
+            var maxAgeDays = Math.Max(0, _config.GoalscorersRefreshMaxAgeDays);
+            var lastWriteUtc = File.GetLastWriteTimeUtc(path);
+            return DateTime.UtcNow - lastWriteUtc > TimeSpan.FromDays(maxAgeDays);
         }
 
         private static string SourceText(double goalScorerBoost, double apiAttackBoost, double regularDefensiveBoost)

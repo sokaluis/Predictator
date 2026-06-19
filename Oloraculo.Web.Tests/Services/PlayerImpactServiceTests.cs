@@ -4,6 +4,7 @@ using Oloraculo.Web.Models;
 using Oloraculo.Web.Models.ApiFootballModels;
 using Oloraculo.Web.Models.CsvModels;
 using Oloraculo.Web.Services;
+using System.Net;
 
 namespace Oloraculo.Web.Tests;
 
@@ -118,15 +119,96 @@ public class PlayerImpactServiceTests : TestFixtures
         Assert.Equal(PlayerImpactSources.Position, impact.Source);
     }
 
-    private static PlayerImpactService ImpactService(string root, string goalscorersRawUrl) =>
+    [Fact]
+    public async Task CalculateAsync_MissingGoalscorersCsvDownloadsConfiguredSource()
+    {
+        var root = NewTempRoot();
+        var dataPath = Path.Combine(root, "Data", OloraculoDataFiles.GoalscorersCsv);
+        var handler = new CountingHttpMessageHandler("https://goalscorers.test/current.csv", GoalscorersCsv("France", "Kylian Mbappé"));
+        var service = ImpactService(root, "https://goalscorers.test/current.csv", handler);
+
+        var impact = await service.CalculateAsync("france", "Kylian Mbappe", "kylian-mbappe", PlayerPositions.Attacker);
+
+        Assert.Equal(1, handler.RequestCount);
+        Assert.True(File.Exists(dataPath));
+        Assert.Equal(PlayerImpactSources.Goalscorers, impact.Source);
+    }
+
+    [Fact]
+    public async Task CalculateAsync_FreshGoalscorersCsvUsesLocalFileWithoutNetwork()
+    {
+        var root = NewTempRoot();
+        var dataPath = await WriteGoalscorersCsv(root, GoalscorersCsv("France", "Kylian Mbappé"));
+        File.SetLastWriteTimeUtc(dataPath, DateTime.UtcNow);
+        var handler = new CountingHttpMessageHandler("https://goalscorers.test/current.csv", GoalscorersCsv("Argentina", "Lionel Messi"));
+        var service = ImpactService(root, "https://goalscorers.test/current.csv", handler);
+
+        var impact = await service.CalculateAsync("france", "Kylian Mbappe", "kylian-mbappe", PlayerPositions.Attacker);
+
+        Assert.Equal(0, handler.RequestCount);
+        Assert.Equal(PlayerImpactSources.Goalscorers, impact.Source);
+    }
+
+    [Fact]
+    public async Task CalculateAsync_StaleGoalscorersCsvRefreshesConfiguredSource()
+    {
+        var root = NewTempRoot();
+        var dataPath = await WriteGoalscorersCsv(root, GoalscorersCsv("Argentina", "Lionel Messi"));
+        File.SetLastWriteTimeUtc(dataPath, DateTime.UtcNow.AddDays(-10));
+        var handler = new CountingHttpMessageHandler("https://goalscorers.test/current.csv", GoalscorersCsv("France", "Kylian Mbappé"));
+        var service = ImpactService(root, "https://goalscorers.test/current.csv", handler, refreshMaxAgeDays: 7);
+
+        var impact = await service.CalculateAsync("france", "Kylian Mbappe", "kylian-mbappe", PlayerPositions.Attacker);
+
+        Assert.Equal(1, handler.RequestCount);
+        Assert.Equal(PlayerImpactSources.Goalscorers, impact.Source);
+        Assert.Contains("Kylian Mbappé", await File.ReadAllTextAsync(dataPath));
+    }
+
+    [Fact]
+    public async Task CalculateAsync_StaleGoalscorersCsvKeepsLocalFileWhenRefreshFails()
+    {
+        var root = NewTempRoot();
+        var dataPath = await WriteGoalscorersCsv(root, GoalscorersCsv("France", "Kylian Mbappé"));
+        File.SetLastWriteTimeUtc(dataPath, DateTime.UtcNow.AddDays(-10));
+        var handler = new CountingHttpMessageHandler("https://goalscorers.test/current.csv", null, HttpStatusCode.InternalServerError);
+        var service = ImpactService(root, "https://goalscorers.test/current.csv", handler, refreshMaxAgeDays: 7);
+
+        var impact = await service.CalculateAsync("france", "Kylian Mbappe", "kylian-mbappe", PlayerPositions.Attacker);
+
+        Assert.Equal(1, handler.RequestCount);
+        Assert.Equal(PlayerImpactSources.Goalscorers, impact.Source);
+    }
+
+    private static PlayerImpactService ImpactService(
+        string root,
+        string goalscorersRawUrl,
+        HttpMessageHandler? handler = null,
+        int refreshMaxAgeDays = 7) =>
         new(
-            new HttpClient(new FakeHttpMessageHandler(new Dictionary<string, string>())),
+            new HttpClient(handler ?? new FakeHttpMessageHandler(new Dictionary<string, string>())),
             new TestEnvironment(root),
             Options.Create(new OloraculoConfig
             {
                 GoalscorersRawUrl = goalscorersRawUrl,
+                GoalscorersRefreshMaxAgeDays = refreshMaxAgeDays,
                 GoalscorerLookbackYears = 6
             }));
+
+    private static async Task<string> WriteGoalscorersCsv(string root, string content)
+    {
+        var dataDirectory = Path.Combine(root, "Data");
+        Directory.CreateDirectory(dataDirectory);
+        var path = Path.Combine(dataDirectory, OloraculoDataFiles.GoalscorersCsv);
+        await File.WriteAllTextAsync(path, content);
+        return path;
+    }
+
+    private static string GoalscorersCsv(string team, string scorer) =>
+        $"""
+        date,home_team,away_team,team,scorer,minute,own_goal,penalty
+        {DateTime.UtcNow.AddMonths(-1):yyyy-MM-dd},{team},Opponent,{team},{scorer},12,FALSE,FALSE
+        """;
 
     private static GoalscorerCsvRow Goalscorer(string date, string team, string scorer, bool ownGoal, bool penalty) => new()
     {
@@ -136,4 +218,21 @@ public class PlayerImpactServiceTests : TestFixtures
         OwnGoal = ownGoal.ToString(),
         Penalty = penalty.ToString()
     };
+
+    private sealed class CountingHttpMessageHandler(string expectedUrl, string? response, HttpStatusCode statusCode = HttpStatusCode.OK) : HttpMessageHandler
+    {
+        public int RequestCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            if (request.RequestUri?.ToString() != expectedUrl)
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+
+            return Task.FromResult(new HttpResponseMessage(statusCode)
+            {
+                Content = new StringContent(response ?? "")
+            });
+        }
+    }
 }

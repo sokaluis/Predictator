@@ -30,6 +30,8 @@ bld/
 
 ## Local automation
 /publish-readme-snapshot.bat
+.atl/
+.serena/
 
 ## ASP.NET / dotnet
 project.lock.json

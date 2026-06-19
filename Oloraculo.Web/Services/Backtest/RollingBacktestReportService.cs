@@ -126,10 +126,120 @@ public sealed class RollingBacktestReportService
                 CultureInfo.InvariantCulture,
                 $"| {segment.SegmentName} | {segment.Summary.ModelName} | {segment.Summary.Count} | {segment.Summary.MeanBrier:0.0000} | {segment.Summary.MeanLogLoss:0.0000} | {segment.Summary.MeanRps:0.0000} | {segment.Summary.TopPickAccuracy:P1} |")));
 
+            var deltaRows = GetSegmentDeltaRows(report.SegmentSummaries);
+            if (deltaRows.Count > 0)
+            {
+                lines.Add("");
+                lines.Add("## Delta vs baseline by match type");
+                lines.Add("");
+                lines.Add("| Segment | Targets | ΔBrier | ΔLogLoss | ΔRPS | ΔTopPickAccuracy |");
+                lines.Add("| --- | ---: | ---: | ---: | ---: | ---: |");
+                lines.AddRange(deltaRows.Select(row => string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"| {row.SegmentName} | {row.Targets} | {row.DeltaBrier:+0.0000;-0.0000;0.0000} | {row.DeltaLogLoss:+0.0000;-0.0000;0.0000} | {row.DeltaRps:+0.0000;-0.0000;0.0000} | {row.DeltaTopPickAccuracy * 100:+0.0;-0.0;0.0} pp |")));
+
+                var guidanceRows = GetSegmentConfidenceGuidanceRows(deltaRows);
+                if (guidanceRows.Count > 0)
+                {
+                    lines.Add("");
+                    lines.Add("## Confidence guidance by match type");
+                    lines.Add("");
+                    lines.Add("| Segment | Confidence guidance | Interpretation |");
+                    lines.Add("| --- | --- | --- |");
+                    lines.AddRange(guidanceRows.Select(row =>
+                        $"| {row.SegmentName} | {row.Guidance} | {row.Interpretation} |"));
+                }
+            }
         }
 
         return string.Join(Environment.NewLine, lines);
     }
+
+    private static IReadOnlyList<BacktestSegmentDeltaRow> GetSegmentDeltaRows(
+        IReadOnlyList<BacktestSegmentModelSummary> segmentSummaries) =>
+        segmentSummaries
+            .GroupBy(summary => summary.SegmentName, StringComparer.Ordinal)
+            .Select(group =>
+            {
+                var baseline = group.FirstOrDefault(summary =>
+                    string.Equals(summary.Summary.ModelName, "Modelo base", StringComparison.Ordinal));
+                var poisson = group.FirstOrDefault(summary =>
+                    string.Equals(summary.Summary.ModelName, "Modelo de goles (Poisson)", StringComparison.Ordinal));
+
+                return baseline is null || poisson is null
+                    ? null
+                    : new BacktestSegmentDeltaRow(
+                        group.Key,
+                        poisson.Summary.Count,
+                        poisson.Summary.MeanBrier - baseline.Summary.MeanBrier,
+                        poisson.Summary.MeanLogLoss - baseline.Summary.MeanLogLoss,
+                        poisson.Summary.MeanRps - baseline.Summary.MeanRps,
+                        poisson.Summary.TopPickAccuracy - baseline.Summary.TopPickAccuracy);
+            })
+            .Where(row => row is not null)
+            .Cast<BacktestSegmentDeltaRow>()
+            .ToList();
+
+    private static IReadOnlyList<BacktestSegmentConfidenceGuidanceRow> GetSegmentConfidenceGuidanceRows(
+        IReadOnlyList<BacktestSegmentDeltaRow> deltaRows) =>
+        deltaRows
+            .Select(row => row.SegmentName switch
+            {
+                BacktestMatchSegmentClassifier.AllMatches => new BacktestSegmentConfidenceGuidanceRow(
+                    row.SegmentName,
+                    "Aggregate only",
+                    "Use this as the overall benchmark; segment-specific rows are better for match-type confidence."),
+                BacktestMatchSegmentClassifier.Friendlies => new BacktestSegmentConfidenceGuidanceRow(
+                    row.SegmentName,
+                    "Lower confidence / noisy",
+                    "Treat positive deltas as useful but weaker; rotation and experimental lineups likely add noise."),
+                BacktestMatchSegmentClassifier.WorldCupQualifiers when HasLimitedSample(row) => LimitedSampleGuidance(row),
+                BacktestMatchSegmentClassifier.WorldCupQualifiers when HasStrongSignal(row) => new BacktestSegmentConfidenceGuidanceRow(
+                    row.SegmentName,
+                    "High confidence / strongest signal",
+                    "Strong Poisson improvement with enough evaluated targets; this is the clearest segment signal."),
+                BacktestMatchSegmentClassifier.WorldCupFinals when HasLimitedSample(row) => LimitedSampleGuidance(row),
+                BacktestMatchSegmentClassifier.WorldCupFinals => new BacktestSegmentConfidenceGuidanceRow(
+                    row.SegmentName,
+                    "Cautious confidence",
+                    "Improvement can be meaningful, but knockout context keeps interpretation cautious."),
+                BacktestMatchSegmentClassifier.OtherOfficialTournaments when HasLimitedSample(row) => LimitedSampleGuidance(row),
+                BacktestMatchSegmentClassifier.OtherOfficialTournaments when HasUsefulPositiveSignal(row) => new BacktestSegmentConfidenceGuidanceRow(
+                    row.SegmentName,
+                    "Good confidence",
+                    "Positive official-match signal, but this bucket is broad and heterogeneous."),
+                _ when HasLimitedSample(row) => LimitedSampleGuidance(row),
+                _ when HasUsefulPositiveSignal(row) => new BacktestSegmentConfidenceGuidanceRow(
+                    row.SegmentName,
+                    "Moderate confidence",
+                    "Poisson improves over baseline; read alongside sample size and segment context."),
+                _ => new BacktestSegmentConfidenceGuidanceRow(
+                    row.SegmentName,
+                    "Low confidence",
+                    "Deltas do not show a clear improvement over baseline for this segment.")
+            })
+            .ToList();
+
+    private static BacktestSegmentConfidenceGuidanceRow LimitedSampleGuidance(BacktestSegmentDeltaRow row) =>
+        new(
+            row.SegmentName,
+            "Limited sample — cautious",
+            "Improvement may exist, but the evaluated target count is small enough to avoid overclaiming.");
+
+    private static bool HasLimitedSample(BacktestSegmentDeltaRow row) => row.Targets < 200;
+
+    private static bool HasStrongSignal(BacktestSegmentDeltaRow row) =>
+        row.Targets >= 1_000 &&
+        row.DeltaBrier <= -0.1500 &&
+        row.DeltaLogLoss <= -0.2000 &&
+        row.DeltaRps <= -0.0500 &&
+        row.DeltaTopPickAccuracy >= 0.1000;
+
+    private static bool HasUsefulPositiveSignal(BacktestSegmentDeltaRow row) =>
+        row.DeltaBrier < 0 &&
+        row.DeltaLogLoss < 0 &&
+        row.DeltaRps < 0 &&
+        row.DeltaTopPickAccuracy > 0;
 
     public static BacktestReportOptions ParseOptions(IEnumerable<string> args)
     {
@@ -306,3 +416,16 @@ public sealed record BacktestReport(
     public BacktestReportOptions Options { get; init; } = new();
     public IReadOnlyList<BacktestSegmentModelSummary> SegmentSummaries { get; init; } = [];
 }
+
+internal sealed record BacktestSegmentDeltaRow(
+    string SegmentName,
+    int Targets,
+    double DeltaBrier,
+    double DeltaLogLoss,
+    double DeltaRps,
+    double DeltaTopPickAccuracy);
+
+internal sealed record BacktestSegmentConfidenceGuidanceRow(
+    string SegmentName,
+    string Guidance,
+    string Interpretation);

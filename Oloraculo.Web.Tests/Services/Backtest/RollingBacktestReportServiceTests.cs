@@ -163,6 +163,133 @@ public class RollingBacktestReportServiceTests
     }
 
     [Fact]
+    public void Render_PrintsPoissonDeltaVsBaselineBySegment()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(4, 4, 0, 0, 0, []),
+            [])
+        {
+            SegmentSummaries =
+            [
+                new BacktestSegmentModelSummary(
+                    BacktestMatchSegmentClassifier.Friendlies,
+                    new BacktestModelSummary("Modelo base", 2, 0.600, 0.900, 0.300, 0.50)),
+                new BacktestSegmentModelSummary(
+                    BacktestMatchSegmentClassifier.Friendlies,
+                    new BacktestModelSummary("Modelo de goles (Poisson)", 2, 0.550, 0.950, 0.250, 0.75))
+            ]
+        };
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.Contains("## Delta vs baseline by match type", output);
+        Assert.Contains("| Segment | Targets | ΔBrier | ΔLogLoss | ΔRPS | ΔTopPickAccuracy |", output);
+        Assert.Contains("| Friendlies | 2 | -0.0500 | +0.0500 | -0.0500 | +25.0 pp |", output);
+    }
+
+    [Fact]
+    public void Render_PrintsConfidenceGuidanceWhenPoissonDeltaRowsExist()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(4, 4, 0, 0, 0, []),
+            [])
+        {
+            SegmentSummaries =
+            [
+                SegmentSummary(BacktestMatchSegmentClassifier.Friendlies, "Modelo base", 2_238, 0.6000, 0.9000, 0.3000, 0.5000),
+                SegmentSummary(BacktestMatchSegmentClassifier.Friendlies, "Modelo de goles (Poisson)", 2_238, 0.4964, 0.7497, 0.2530, 0.5480),
+                SegmentSummary(BacktestMatchSegmentClassifier.WorldCupQualifiers, "Modelo base", 1_767, 0.7000, 1.1000, 0.3000, 0.4500),
+                SegmentSummary(BacktestMatchSegmentClassifier.WorldCupQualifiers, "Modelo de goles (Poisson)", 1_767, 0.4947, 0.7954, 0.2089, 0.6220),
+                SegmentSummary(BacktestMatchSegmentClassifier.WorldCupFinals, "Modelo base", 136, 0.5000, 0.8000, 0.2000, 0.4000),
+                SegmentSummary(BacktestMatchSegmentClassifier.WorldCupFinals, "Modelo de goles (Poisson)", 136, 0.4254, 0.6967, 0.1673, 0.5690),
+                SegmentSummary(BacktestMatchSegmentClassifier.OtherOfficialTournaments, "Modelo base", 3_925, 0.6500, 1.0000, 0.2500, 0.4800),
+                SegmentSummary(BacktestMatchSegmentClassifier.OtherOfficialTournaments, "Modelo de goles (Poisson)", 3_925, 0.5004, 0.7814, 0.1841, 0.6170)
+            ]
+        };
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.Contains("## Confidence guidance by match type", output);
+        Assert.Contains("| Friendlies | Lower confidence / noisy |", output);
+        Assert.Contains("rotation and experimental lineups", output);
+        Assert.Contains("| World Cup qualifiers | High confidence / strongest signal |", output);
+        Assert.Contains("| World Cup finals | Limited sample — cautious |", output);
+        Assert.Contains("| Other official tournaments | Good confidence |", output);
+        Assert.Contains("broad and heterogeneous", output);
+    }
+
+    [Fact]
+    public void Render_PrintsFocusedPoissonDeltaOnlyForSelectedSegment()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(4, 4, 0, 0, 0, []),
+            [])
+        {
+            Options = new BacktestReportOptions(Segment: BacktestMatchSegmentClassifier.WorldCupQualifiers),
+            SegmentSummaries =
+            [
+                new BacktestSegmentModelSummary(
+                    BacktestMatchSegmentClassifier.WorldCupQualifiers,
+                    new BacktestModelSummary("Modelo base", 3, 0.700, 1.100, 0.400, 0.333)),
+                new BacktestSegmentModelSummary(
+                    BacktestMatchSegmentClassifier.WorldCupQualifiers,
+                    new BacktestModelSummary("Modelo de goles (Poisson)", 3, 0.650, 1.000, 0.350, 0.667))
+            ]
+        };
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.Contains("Segment: World Cup qualifiers", output);
+        Assert.Contains("| World Cup qualifiers | 3 | -0.0500 | -0.1000 | -0.0500 | +33.4 pp |", output);
+        Assert.DoesNotContain("| Friendlies |", output);
+    }
+
+    [Fact]
+    public void Render_PrintsFocusedConfidenceGuidanceOnlyForSelectedSegment()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(4, 4, 0, 0, 0, []),
+            [])
+        {
+            Options = new BacktestReportOptions(Segment: BacktestMatchSegmentClassifier.WorldCupQualifiers),
+            SegmentSummaries =
+            [
+                SegmentSummary(BacktestMatchSegmentClassifier.WorldCupQualifiers, "Modelo base", 1_767, 0.7000, 1.1000, 0.3000, 0.4500),
+                SegmentSummary(BacktestMatchSegmentClassifier.WorldCupQualifiers, "Modelo de goles (Poisson)", 1_767, 0.4947, 0.7954, 0.2089, 0.6220)
+            ]
+        };
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.Contains("## Confidence guidance by match type", output);
+        Assert.Contains("| World Cup qualifiers | High confidence / strongest signal |", output);
+        Assert.DoesNotContain("| Friendlies |", output);
+        Assert.DoesNotContain("| World Cup finals |", output);
+    }
+
+    [Fact]
+    public void Render_SkipsDeltaTableWhenPoissonComparisonIsMissing()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(3, 2, 1, 0, 0, []),
+            [])
+        {
+            SegmentSummaries =
+            [
+                new BacktestSegmentModelSummary(
+                    BacktestMatchSegmentClassifier.Friendlies,
+                    new BacktestModelSummary("Modelo base", 1, 0.500, 0.700, 0.200, 1.0))
+            ]
+        };
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.Contains("## Performance by match type", output);
+        Assert.DoesNotContain("## Delta vs baseline by match type", output);
+        Assert.DoesNotContain("## Confidence guidance by match type", output);
+    }
+
+    [Fact]
     public void Render_PrintsSelectedSegmentWhenPresent()
     {
         var report = new BacktestReport(
@@ -284,4 +411,14 @@ public class RollingBacktestReportServiceTests
             Tournament = tournament,
             Neutral = "TRUE"
         };
+
+    private static BacktestSegmentModelSummary SegmentSummary(
+        string segment,
+        string model,
+        int count,
+        double brier,
+        double logLoss,
+        double rps,
+        double topPickAccuracy) =>
+        new(segment, new BacktestModelSummary(model, count, brier, logLoss, rps, topPickAccuracy));
 }

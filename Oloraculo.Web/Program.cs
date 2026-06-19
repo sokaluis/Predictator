@@ -4,7 +4,17 @@ using Oloraculo.Web;
 using Oloraculo.Web.Components;
 using Oloraculo.Web.DAL;
 using Oloraculo.Web.Services;
+using Oloraculo.Web.Services.Backtest;
 using Oloraculo.Web.Services.Simulation;
+
+if (args.Any(arg => string.Equals(arg, "--backtest-report", StringComparison.OrdinalIgnoreCase)))
+{
+    var options = RollingBacktestReportService.ParseOptions(args);
+    var csvPath = RollingBacktestReportService.ResolveDefaultHistoricalResultsPath();
+    var report = new RollingBacktestReportService().GenerateFromCsv(csvPath, options);
+    Console.WriteLine(RollingBacktestReportService.Render(report));
+    return;
+}
 
 var builder = WebApplication.CreateBuilder(args);
 

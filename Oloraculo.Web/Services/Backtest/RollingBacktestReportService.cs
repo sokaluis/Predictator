@@ -238,6 +238,16 @@ public sealed class RollingBacktestReportService
             {
                 lines.Add(
                     $"- {model.ModelName}: {model.DegradedCount}/{model.Count} predictions fell back (missing as-of snapshots or required data).");
+
+                if (model.DegradedReasonCounts.Count > 0)
+                {
+                    foreach (var (reason, count) in model.DegradedReasonCounts
+                        .OrderByDescending(kv => kv.Value)
+                        .ThenBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase))
+                    {
+                        lines.Add($"  • {reason}: {count}");
+                    }
+                }
             }
         }
 

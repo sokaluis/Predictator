@@ -754,6 +754,140 @@ public class RollingBacktestServiceTests
         Assert.Equal(0.0, summary.ReadinessPct, precision: 3);
     }
 
+    [Fact]
+    public void Compare_DegradedReasonCountsAggregateFeaturesMissingPerModel()
+    {
+        var results = new[]
+        {
+            Result("first", "c", "a", "2024-01-01", 1, 1),
+            Result("second", "b", "c", "2024-01-02", 2, 0),
+            Result("target", "a", "b", "2024-01-03", 1, 0),
+            Result("future", "a", "b", "2024-01-04", 0, 1)
+        };
+        var strategies = new[]
+        {
+            new BacktestModelStrategy(
+                "degraded-multi",
+                _ => new DegradedPredictor("degraded-multi", "ratings Elo", "ranking FIFA", "ratings Elo"))
+        };
+
+        var comparison = new RollingBacktestService().Compare(results, strategies, minimumPriorMatchesPerTeam: 1);
+
+        var summary = Assert.Single(comparison.Summaries);
+        Assert.Equal(2, summary.DegradedCount);
+        Assert.Equal(2 * 2, summary.DegradedReasonCounts.Values.Sum());
+        Assert.Equal(2, summary.DegradedReasonCounts["ratings Elo"]);
+        Assert.Equal(2, summary.DegradedReasonCounts["ranking FIFA"]);
+    }
+
+    [Fact]
+    public void Compare_DegradedReasonCountsFallBackToExplanationWhenFeaturesMissingIsEmpty()
+    {
+        var results = new[]
+        {
+            Result("first", "c", "a", "2024-01-01", 1, 1),
+            Result("second", "b", "c", "2024-01-02", 2, 0),
+            Result("target", "a", "b", "2024-01-03", 1, 0)
+        };
+        // Predictor degrades with only Explanation (no FeaturesMissing), like EloModel degraded path
+        var strategies = new[]
+        {
+            new BacktestModelStrategy(
+                "elo-fallback",
+                _ => new DegradedPredictor("elo-fallback", explanation: "Faltan ratings Elo para uno o ambos equipos."))
+        };
+
+        var comparison = new RollingBacktestService().Compare(results, strategies, minimumPriorMatchesPerTeam: 1);
+
+        var summary = Assert.Single(comparison.Summaries);
+        Assert.Equal(1, summary.DegradedCount);
+        Assert.Contains(new KeyValuePair<string, int>("ratings Elo", 1), summary.DegradedReasonCounts);
+    }
+
+    [Fact]
+    public void Compare_NonDegradedModelHasEmptyDegradedReasonCounts()
+    {
+        var results = new[]
+        {
+            Result("first", "c", "a", "2024-01-01", 1, 1),
+            Result("second", "b", "c", "2024-01-02", 2, 0),
+            Result("target", "a", "b", "2024-01-03", 1, 0)
+        };
+        var strategies = new[]
+        {
+            Strategy("always-signal", OutcomeProbabilities.Uniform)
+        };
+
+        var comparison = new RollingBacktestService().Compare(results, strategies, minimumPriorMatchesPerTeam: 1);
+
+        var summary = Assert.Single(comparison.Summaries);
+        Assert.Equal(0, summary.DegradedCount);
+        Assert.Empty(summary.DegradedReasonCounts);
+    }
+
+    [Fact]
+    public void Compare_DegradedReasonCountsReflectEloModelFallback()
+    {
+        var results = new[]
+        {
+            Result("first", "c", "a", "2024-01-01", 1, 1),
+            Result("second", "b", "c", "2024-01-02", 2, 0),
+            Result("target", "a", "b", "2024-01-03", 1, 0)
+        };
+        var strategies = new[]
+        {
+            new BacktestModelStrategy("Elo", _ => new EloModel())
+        };
+
+        var comparison = new RollingBacktestService().Compare(results, strategies, minimumPriorMatchesPerTeam: 1);
+
+        var summary = Assert.Single(comparison.Summaries);
+        Assert.Equal(1, summary.DegradedCount);
+        Assert.Contains(new KeyValuePair<string, int>("ratings Elo", 1), summary.DegradedReasonCounts);
+    }
+
+    [Fact]
+    public void Compare_DegradedReasonCountsReflectFifaModelFallback()
+    {
+        var results = new[]
+        {
+            Result("first", "c", "a", "2024-01-01", 1, 1),
+            Result("second", "b", "c", "2024-01-02", 2, 0),
+            Result("target", "a", "b", "2024-01-03", 1, 0)
+        };
+        var strategies = new[]
+        {
+            new BacktestModelStrategy("Ranking FIFA", _ => new FifaRankingModel())
+        };
+
+        var comparison = new RollingBacktestService().Compare(results, strategies, minimumPriorMatchesPerTeam: 1);
+
+        var summary = Assert.Single(comparison.Summaries);
+        Assert.Equal(1, summary.DegradedCount);
+        Assert.Contains(new KeyValuePair<string, int>("ranking FIFA", 1), summary.DegradedReasonCounts);
+    }
+
+    [Fact]
+    public void Compare_DegradedReasonCountsReflectRecentFormEloFallback()
+    {
+        var results = new[]
+        {
+            Result("first", "c", "a", "2024-01-01", 1, 1),
+            Result("second", "b", "c", "2024-01-02", 2, 0),
+            Result("target", "a", "b", "2024-01-03", 1, 0)
+        };
+        var strategies = new[]
+        {
+            new BacktestModelStrategy("Forma reciente", _ => new RecentFormModel())
+        };
+
+        var comparison = new RollingBacktestService().Compare(results, strategies, minimumPriorMatchesPerTeam: 1);
+
+        var summary = Assert.Single(comparison.Summaries);
+        Assert.Equal(1, summary.DegradedCount);
+        Assert.Contains(new KeyValuePair<string, int>("ratings Elo", 1), summary.DegradedReasonCounts);
+    }
+
     private static MatchResult Result(
         string id,
         string homeTeamId,
@@ -825,6 +959,43 @@ public class RollingBacktestServiceTests
             HomeTeamId = context.HomeTeamId,
             AwayTeamId = context.AwayTeamId,
             Outcome = outcome
+        };
+    }
+
+    private sealed class DegradedPredictor : IPredictor
+    {
+        private readonly string _name;
+        private readonly IReadOnlyList<string> _featuresMissing;
+        private readonly string _explanation;
+
+        public DegradedPredictor(string name, params string[] featuresMissing)
+        {
+            _name = name;
+            _featuresMissing = featuresMissing;
+            _explanation = "";
+        }
+
+        public DegradedPredictor(string name, string explanation)
+        {
+            _name = name;
+            _featuresMissing = [];
+            _explanation = explanation;
+        }
+
+        public string Name => _name;
+        public int Priority => 0;
+
+        public MatchPrediction Predict(MatchContext context) => new()
+        {
+            PredictorName = _name,
+            PredictorPriority = Priority,
+            FixtureId = context.Fixture.Id,
+            HomeTeamId = context.HomeTeamId,
+            AwayTeamId = context.AwayTeamId,
+            Outcome = OutcomeProbabilities.Uniform,
+            Degraded = true,
+            FeaturesMissing = _featuresMissing,
+            Explanation = _explanation
         };
     }
 

@@ -86,6 +86,11 @@ public sealed class RollingBacktestReportService
 
     public static string Render(BacktestReport report)
     {
+        var modelNames = report.Summaries
+            .Select(summary => summary.ModelName)
+            .DefaultIfEmpty("Modelo base; Modelo de goles (Poisson)");
+        var includesRatingAwareModels = report.Summaries.Any(summary =>
+            summary.ModelName is "Elo" or "Ranking FIFA" or "Forma reciente");
         var lines = new List<string>
         {
             "Rolling-origin backtest report",
@@ -94,8 +99,10 @@ public sealed class RollingBacktestReportService
             $"Excluded unplayed/invalid rows: {report.LoadResult.ExcludedUnscoredOrInvalid.ToString(CultureInfo.InvariantCulture)}",
             $"Excluded duplicate rows: {report.LoadResult.DuplicateRows.ToString(CultureInfo.InvariantCulture)}",
             $"Excluded by report options: {report.LoadResult.FilteredOutByOptions.ToString(CultureInfo.InvariantCulture)}",
-            "Models: Modelo base; Modelo de goles (Poisson)",
-            "Limitations: Elo, FIFA ranking, and RecentForm are intentionally excluded until historical as-of snapshots exist.",
+            $"Models: {string.Join("; ", modelNames)}",
+            includesRatingAwareModels
+                ? "Rating snapshots: rating-aware models used historical as-of snapshots."
+                : "Limitations: Elo, FIFA ranking, and RecentForm are intentionally excluded until historical as-of snapshots exist.",
             "",
             "| Model | Count | MeanBrier | MeanLogLoss | MeanRPS | TopPickAccuracy |",
             "| --- | ---: | ---: | ---: | ---: | ---: |"

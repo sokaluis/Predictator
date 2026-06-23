@@ -345,6 +345,136 @@ public class RollingBacktestServiceTests
     }
 
     [Fact]
+    public void Compare_DefaultStrategiesExcludeRatingAwareModelsWhenAsOfSnapshotsAreUnavailable()
+    {
+        var results = new[]
+        {
+            Result("first", "c", "a", "2024-01-01", 1, 1),
+            Result("second", "b", "c", "2024-01-02", 2, 0),
+            Result("target", "a", "b", "2024-01-03", 1, 0)
+        };
+
+        var comparison = new RollingBacktestService().Compare(results, minimumPriorMatchesPerTeam: 1);
+
+        Assert.Equal(["Modelo base", "Modelo de goles (Poisson)"], comparison.Evaluations
+            .Select(evaluation => evaluation.ModelName)
+            .OrderBy(modelName => modelName, StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void Compare_DefaultStrategiesIncludeRatingAwareModelsWhenAsOfSnapshotsAreAvailable()
+    {
+        var targetDate = DateTimeOffset.Parse("2024-01-03T00:00:00Z");
+        var provider = new InMemoryBacktestRatingSnapshotProvider(
+        [
+            Rating("a", RatingTypeEnum.Elo, 1500, targetDate.AddDays(-1)),
+            Rating("b", RatingTypeEnum.Elo, 1400, targetDate.AddDays(-1)),
+            Rating("a", RatingTypeEnum.Fifa, 1600, targetDate.AddDays(-1)),
+            Rating("b", RatingTypeEnum.Fifa, 1300, targetDate.AddDays(-1))
+        ]);
+        var results = new[]
+        {
+            Result("first", "c", "a", "2024-01-01", 1, 1),
+            Result("second", "b", "c", "2024-01-02", 2, 0),
+            Result("target", "a", "b", "2024-01-03", 1, 0)
+        };
+
+        var comparison = new RollingBacktestService(provider).Compare(results, minimumPriorMatchesPerTeam: 1);
+
+        Assert.Equal([
+            "Elo",
+            "Forma reciente",
+            "Modelo base",
+            "Modelo de goles (Poisson)",
+            "Ranking FIFA"
+        ], comparison.Evaluations
+            .Select(evaluation => evaluation.ModelName)
+            .OrderBy(modelName => modelName, StringComparer.Ordinal));
+        Assert.All(comparison.Evaluations, evaluation => Assert.Equal("backtest:target", evaluation.FixtureId));
+    }
+
+    [Fact]
+    public void Compare_EloOnlySnapshotsIncludeEloAndRecentFormButNotFifa()
+    {
+        var targetDate = DateTimeOffset.Parse("2024-01-03T00:00:00Z");
+        var provider = new InMemoryBacktestRatingSnapshotProvider(
+        [
+            Rating("a", RatingTypeEnum.Elo, 1500, targetDate.AddDays(-1)),
+            Rating("b", RatingTypeEnum.Elo, 1400, targetDate.AddDays(-1))
+        ]);
+        var results = RatingGatedResults();
+
+        var comparison = new RollingBacktestService(provider).Compare(results, minimumPriorMatchesPerTeam: 1);
+
+        Assert.Contains(comparison.Evaluations, evaluation => evaluation.ModelName == "Elo");
+        Assert.Contains(comparison.Evaluations, evaluation => evaluation.ModelName == "Forma reciente");
+        Assert.DoesNotContain(comparison.Evaluations, evaluation => evaluation.ModelName == "Ranking FIFA");
+    }
+
+    [Fact]
+    public void Compare_FifaOnlySnapshotsIncludeFifaButNotEloOrRecentForm()
+    {
+        var targetDate = DateTimeOffset.Parse("2024-01-03T00:00:00Z");
+        var provider = new InMemoryBacktestRatingSnapshotProvider(
+        [
+            Rating("a", RatingTypeEnum.Fifa, 1600, targetDate.AddDays(-1)),
+            Rating("b", RatingTypeEnum.Fifa, 1300, targetDate.AddDays(-1))
+        ]);
+        var results = RatingGatedResults();
+
+        var comparison = new RollingBacktestService(provider).Compare(results, minimumPriorMatchesPerTeam: 1);
+
+        Assert.Contains(comparison.Evaluations, evaluation => evaluation.ModelName == "Ranking FIFA");
+        Assert.DoesNotContain(comparison.Evaluations, evaluation => evaluation.ModelName == "Elo");
+        Assert.DoesNotContain(comparison.Evaluations, evaluation => evaluation.ModelName == "Forma reciente");
+    }
+
+    [Fact]
+    public void Compare_FutureOnlySnapshotsDoNotEnableRatingAwareModels()
+    {
+        var targetDate = DateTimeOffset.Parse("2024-01-03T00:00:00Z");
+        var provider = new InMemoryBacktestRatingSnapshotProvider(
+        [
+            Rating("a", RatingTypeEnum.Elo, 1500, targetDate.AddDays(1)),
+            Rating("b", RatingTypeEnum.Elo, 1400, targetDate.AddDays(1)),
+            Rating("a", RatingTypeEnum.Fifa, 1600, targetDate.AddDays(1)),
+            Rating("b", RatingTypeEnum.Fifa, 1300, targetDate.AddDays(1))
+        ]);
+        var results = RatingGatedResults();
+
+        var comparison = new RollingBacktestService(provider).Compare(results, minimumPriorMatchesPerTeam: 1);
+
+        Assert.Equal(["Modelo base", "Modelo de goles (Poisson)"], comparison.Evaluations
+            .Select(evaluation => evaluation.ModelName)
+            .OrderBy(modelName => modelName, StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void InMemoryRatingSnapshotProvider_SelectsLatestRatingsAsOfTargetDate()
+    {
+        var targetDate = DateTimeOffset.Parse("2024-01-03T00:00:00Z");
+        var provider = new InMemoryBacktestRatingSnapshotProvider(
+        [
+            Rating("a", RatingTypeEnum.Elo, 1400, targetDate.AddDays(-10)),
+            Rating("a", RatingTypeEnum.Elo, 1500, targetDate.AddDays(-1)),
+            Rating("a", RatingTypeEnum.Elo, 2000, targetDate.AddDays(1)),
+            Rating("b", RatingTypeEnum.Elo, 1300, targetDate.AddDays(-2)),
+            Rating("a", RatingTypeEnum.Fifa, 1550, targetDate),
+            Rating("b", RatingTypeEnum.Fifa, 1250, targetDate.AddDays(2))
+        ]);
+
+        var snapshot = provider.GetSnapshot(targetDate, "a", "b");
+
+        Assert.NotNull(snapshot);
+        Assert.Equal(1500, snapshot.HomeElo?.Value);
+        Assert.Equal(1300, snapshot.AwayElo?.Value);
+        Assert.Equal(1550, snapshot.HomeFifaRank?.Value);
+        Assert.Null(snapshot.AwayFifaRank);
+        Assert.All(new[] { snapshot.HomeElo, snapshot.AwayElo, snapshot.HomeFifaRank }.Where(rating => rating is not null),
+            rating => Assert.True(rating!.AsOf <= targetDate));
+    }
+
+    [Fact]
     public void BuildPredictionPoints_RatingAwareStrategyReceivesTargetDateSnapshots()
     {
         var targetDate = DateTimeOffset.Parse("2024-01-03T00:00:00Z");
@@ -460,6 +590,13 @@ public class RollingBacktestServiceTests
             seen,
             priorResults.Select(result => result.Id).ToArray()));
 
+    private static MatchResult[] RatingGatedResults() =>
+    [
+        Result("first", "c", "a", "2024-01-01", 1, 1),
+        Result("second", "b", "c", "2024-01-02", 2, 0),
+        Result("target", "a", "b", "2024-01-03", 1, 0)
+    ];
+
     private static BacktestRatingSnapshot EloSnapshot(
         string homeTeamId,
         double homeElo,
@@ -556,6 +693,20 @@ public class RollingBacktestServiceTests
     private sealed class StubRatingSnapshotProvider(
         IReadOnlyDictionary<DateTimeOffset, BacktestRatingSnapshot> snapshots) : IBacktestRatingSnapshotProvider
     {
+        public bool HasAsOfSnapshotPair(RatingTypeEnum type, DateTimeOffset targetDate, string homeTeamId, string awayTeamId)
+        {
+            var snapshot = snapshots.GetValueOrDefault(targetDate);
+            var homeRating = RatingFor(snapshot, type, home: true);
+            var awayRating = RatingFor(snapshot, type, home: false);
+
+            return homeRating is not null &&
+                awayRating is not null &&
+                homeRating.TeamId == homeTeamId &&
+                awayRating.TeamId == awayTeamId &&
+                homeRating.AsOf <= targetDate &&
+                awayRating.AsOf <= targetDate;
+        }
+
         public List<(DateTimeOffset TargetDate, string HomeTeamId, string AwayTeamId)> Requests { get; } = [];
 
         public BacktestRatingSnapshot? GetSnapshot(DateTimeOffset targetDate, string homeTeamId, string awayTeamId)
@@ -563,5 +714,12 @@ public class RollingBacktestServiceTests
             Requests.Add((targetDate, homeTeamId, awayTeamId));
             return snapshots.GetValueOrDefault(targetDate);
         }
+
+        private static Rating? RatingFor(BacktestRatingSnapshot? snapshot, RatingTypeEnum type, bool home) => type switch
+        {
+            RatingTypeEnum.Elo => home ? snapshot?.HomeElo : snapshot?.AwayElo,
+            RatingTypeEnum.Fifa => home ? snapshot?.HomeFifaRank : snapshot?.AwayFifaRank,
+            _ => null
+        };
     }
 }

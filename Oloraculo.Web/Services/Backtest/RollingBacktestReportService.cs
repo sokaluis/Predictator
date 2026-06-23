@@ -28,7 +28,8 @@ public sealed class RollingBacktestReportService
         return new BacktestReport(loadResult, comparison.Summaries)
         {
             Options = options,
-            SegmentSummaries = FilterSegmentSummaries(comparison.SegmentSummaries, options)
+            SegmentSummaries = FilterSegmentSummaries(comparison.SegmentSummaries, options),
+            Coverage = comparison.Coverage
         };
     }
 
@@ -89,8 +90,6 @@ public sealed class RollingBacktestReportService
         var modelNames = report.Summaries
             .Select(summary => summary.ModelName)
             .DefaultIfEmpty("Modelo base; Modelo de goles (Poisson)");
-        var includesRatingAwareModels = report.Summaries.Any(summary =>
-            summary.ModelName is "Elo" or "Ranking FIFA" or "Forma reciente");
         var lines = new List<string>
         {
             "Rolling-origin backtest report",
@@ -100,13 +99,24 @@ public sealed class RollingBacktestReportService
             $"Excluded duplicate rows: {report.LoadResult.DuplicateRows.ToString(CultureInfo.InvariantCulture)}",
             $"Excluded by report options: {report.LoadResult.FilteredOutByOptions.ToString(CultureInfo.InvariantCulture)}",
             $"Models: {string.Join("; ", modelNames)}",
-            includesRatingAwareModels
-                ? "Rating snapshots: rating-aware models used historical as-of snapshots."
-                : "Limitations: Elo, FIFA ranking, and RecentForm are intentionally excluded until historical as-of snapshots exist.",
-            "",
-            "| Model | Count | MeanBrier | MeanLogLoss | MeanRPS | TopPickAccuracy |",
-            "| --- | ---: | ---: | ---: | ---: | ---: |"
         };
+
+        if (report.Coverage is not null)
+        {
+            AddCoverageLines(lines, report.Coverage);
+        }
+        else
+        {
+            var includesRatingAwareModels = report.Summaries.Any(summary =>
+                summary.ModelName is "Elo" or "Ranking FIFA" or "Forma reciente");
+            lines.Add(includesRatingAwareModels
+                ? "Rating snapshots: rating-aware models used historical as-of snapshots."
+                : "Limitations: Elo, FIFA ranking, and RecentForm are intentionally excluded until historical as-of snapshots exist.");
+        }
+
+        lines.Add("");
+        lines.Add("| Model | Count | MeanBrier | MeanLogLoss | MeanRPS | TopPickAccuracy |");
+        lines.Add("| --- | ---: | ---: | ---: | ---: | ---: |");
 
         if (report.Options.EvaluateFrom is not null || report.Options.EvaluateTo is not null)
         {
@@ -161,6 +171,33 @@ public sealed class RollingBacktestReportService
 
         return string.Join(Environment.NewLine, lines);
     }
+
+    private static void AddCoverageLines(List<string> lines, BacktestCoverageInfo coverage)
+    {
+        lines.Add("Rating snapshot coverage");
+        lines.Add($"  Eligible targets: {coverage.EligibleTargets.ToString(CultureInfo.InvariantCulture)}");
+
+        var eloPct = coverage.EligibleTargets > 0
+            ? (coverage.EloCoveredTargets * 100.0 / coverage.EligibleTargets).ToString("F1", CultureInfo.InvariantCulture)
+            : "0.0";
+        var eloStatus = coverage.EloEnabled ? "enabled" : DisabledCoverageReason(coverage.EligibleTargets);
+        lines.Add($"  Elo: {coverage.EloCoveredTargets}/{coverage.EligibleTargets} targets ({eloPct}%) — {eloStatus}");
+
+        var fifaPct = coverage.EligibleTargets > 0
+            ? (coverage.FifaCoveredTargets * 100.0 / coverage.EligibleTargets).ToString("F1", CultureInfo.InvariantCulture)
+            : "0.0";
+        var fifaStatus = coverage.FifaEnabled ? "enabled" : DisabledCoverageReason(coverage.EligibleTargets);
+        lines.Add($"  FIFA: {coverage.FifaCoveredTargets}/{coverage.EligibleTargets} targets ({fifaPct}%) — {fifaStatus}");
+
+        var recentFormStatus = coverage.RecentFormEnabled ? "enabled" : "disabled";
+        lines.Add($"  RecentForm: {recentFormStatus} (requires Elo coverage)");
+
+        if (!coverage.EloEnabled && !coverage.FifaEnabled)
+            lines.Add("Limitations: Elo, FIFA ranking, and RecentForm are intentionally excluded until historical as-of snapshots exist.");
+    }
+
+    private static string DisabledCoverageReason(int eligibleTargets) =>
+        eligibleTargets == 0 ? "disabled, no eligible targets" : "disabled, no as-of snapshot pairs";
 
     private static IReadOnlyList<BacktestSegmentDeltaRow> GetSegmentDeltaRows(
         IReadOnlyList<BacktestSegmentModelSummary> segmentSummaries) =>
@@ -422,6 +459,7 @@ public sealed record BacktestReport(
 {
     public BacktestReportOptions Options { get; init; } = new();
     public IReadOnlyList<BacktestSegmentModelSummary> SegmentSummaries { get; init; } = [];
+    public BacktestCoverageInfo? Coverage { get; init; }
 }
 
 internal sealed record BacktestSegmentDeltaRow(

@@ -22,6 +22,37 @@ public sealed class RollingBacktestService
             ReusePredictorForSamePriorResults: true)
     ];
 
+    public static BacktestModelStrategy OracleFinalComparisonStrategy(int goalModelYearsWindow = 8) =>
+        new(
+            "Oráculo final",
+            priorResults =>
+            {
+                var goal = new GoalModel(priorResults, goalModelYearsWindow);
+                var ladder = new IPredictor[]
+                {
+                    new NullModel(),
+                    new FifaRankingModel(),
+                    new EloModel(),
+                    new RecentFormModel(),
+                    goal,
+                    new GoalPlusRecentContextModel(goal)
+                };
+                return new OracleFinalBacktestPredictor(ladder);
+            },
+            ReusePredictorForSamePriorResults: true);
+
+    private sealed class OracleFinalBacktestPredictor(IReadOnlyList<IPredictor> ladder) : IPredictor
+    {
+        public string Name => "Oráculo final";
+        public int Priority => int.MaxValue;
+
+        public MatchPrediction Predict(MatchContext context)
+        {
+            var predictions = ladder.Select(p => p.Predict(context)).ToList();
+            return FinalPredictionSelector.Select(predictions);
+        }
+    }
+
     public IReadOnlyList<BacktestPredictionPoint> BuildPredictionPoints(
         IEnumerable<MatchResult> results,
         int minimumPriorMatchesPerTeam = 1,
@@ -197,7 +228,10 @@ public sealed class RollingBacktestService
             : null;
 
     private static BacktestPredictionEvaluation ToBacktestEvaluation(MatchResult target, MatchPrediction prediction) =>
-        new(ToEvaluation(target, prediction), prediction.Degraded, NormalizeDegradedReasons(prediction));
+        new(ToEvaluation(target, prediction), prediction.Degraded, NormalizeDegradedReasons(prediction))
+        {
+            ChosenPredictorName = ExtractChosenPredictorName(prediction)
+        };
 
     private static IReadOnlyList<string> NormalizeDegradedReasons(MatchPrediction prediction)
     {
@@ -224,6 +258,16 @@ public sealed class RollingBacktestService
             return ["historial reciente"];
 
         return ["motivo no clasificado"];
+    }
+
+    private static string? ExtractChosenPredictorName(MatchPrediction prediction)
+    {
+        if (!string.Equals(prediction.PredictorName, "Oráculo final", StringComparison.Ordinal))
+            return null;
+
+        return prediction.Sources
+            .FirstOrDefault(s => string.Equals(s.Name, "model ladder", StringComparison.OrdinalIgnoreCase))
+            ?.Notes;
     }
 
     private static PredictionEvaluation ToEvaluation(MatchResult target, MatchPrediction prediction)
@@ -265,6 +309,11 @@ public sealed class RollingBacktestService
                     .GroupBy(reason => reason, StringComparer.OrdinalIgnoreCase)
                     .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
 
+                var chosenPredictorCounts = group
+                    .Where(evaluation => evaluation.ChosenPredictorName is not null)
+                    .GroupBy(evaluation => evaluation.ChosenPredictorName!, StringComparer.Ordinal)
+                    .ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal);
+
                 return new BacktestModelSummary(
                     group.Key,
                     count,
@@ -275,7 +324,8 @@ public sealed class RollingBacktestService
                 {
                     SignalBackedCount = signalBacked,
                     DegradedCount = degraded,
-                    DegradedReasonCounts = reasonCounts
+                    DegradedReasonCounts = reasonCounts,
+                    ChosenPredictorCounts = chosenPredictorCounts
                 };
             })
             .OrderBy(summary => summary.MeanBrier)
@@ -320,6 +370,9 @@ public sealed class RollingBacktestService
         var strategies = DefaultComparisonStrategies(goalModelYearsWindow).ToList();
 
         AddRatingAwareStrategies(strategies, includeElo, includeFifa);
+
+        // Always include Oráculo final — it handles its own degradation internally.
+        strategies.Add(OracleFinalComparisonStrategy(goalModelYearsWindow));
 
         return strategies;
     }
@@ -475,6 +528,9 @@ public sealed record BacktestModelSummary(
     public IReadOnlyDictionary<string, int> DegradedReasonCounts { get; init; } =
         new Dictionary<string, int>();
 
+    public IReadOnlyDictionary<string, int> ChosenPredictorCounts { get; init; } =
+        new Dictionary<string, int>();
+
     public double ReadinessPct => Count > 0 ? SignalBackedCount * 100.0 / Count : 100.0;
 
     public bool IsRatingDependent =>
@@ -484,7 +540,10 @@ public sealed record BacktestModelSummary(
 internal sealed record BacktestPredictionEvaluation(
     PredictionEvaluation Evaluation,
     bool Degraded,
-    IReadOnlyList<string> DegradedReasons);
+    IReadOnlyList<string> DegradedReasons)
+{
+    public string? ChosenPredictorName { get; init; }
+}
 
 public sealed record BacktestSegmentModelSummary(
     string SegmentName,

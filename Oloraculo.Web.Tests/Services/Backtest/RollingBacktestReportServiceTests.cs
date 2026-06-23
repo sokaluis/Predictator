@@ -640,6 +640,87 @@ public class RollingBacktestReportServiceTests
         Assert.DoesNotContain("  • ", output);
     }
 
+    [Fact]
+    public void Render_PrintsOracleSelectorBreakdownWhenOracleSummaryExists()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(4, 4, 0, 0, 0, []),
+            [
+                new BacktestModelSummary("Modelo base", 2, 0.667, 1.099, 0.333, 0.5),
+                new BacktestModelSummary("Oráculo final", 2, 0.450, 0.750, 0.200, 0.75)
+                {
+                    ChosenPredictorCounts = new Dictionary<string, int>(StringComparer.Ordinal)
+                    {
+                        ["Modelo de goles (Poisson)"] = 2
+                    }
+                }
+            ]);
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.Contains("## Oráculo final — selector breakdown", output);
+        Assert.Contains("fixture-context signals are not replayed here", output);
+        Assert.Contains("| Chosen predictor | Count |", output);
+        Assert.Contains("| Modelo de goles (Poisson) | 2 |", output);
+    }
+
+    [Fact]
+    public void Render_OmitsOracleSelectorBreakdownWhenOracleMissing()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(4, 4, 0, 0, 0, []),
+            [
+                new BacktestModelSummary("Modelo base", 2, 0.667, 1.099, 0.333, 0.5)
+            ]);
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.DoesNotContain("## Oráculo final", output);
+    }
+
+    [Fact]
+    public void Render_OmitsOracleSelectorBreakdownWhenNoChosenPredictorCounts()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(4, 4, 0, 0, 0, []),
+            [
+                new BacktestModelSummary("Oráculo final", 2, 0.450, 0.750, 0.200, 0.75)
+            ]);
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.DoesNotContain("## Oráculo final — selector breakdown", output);
+    }
+
+    [Fact]
+    public void Render_OracleSelectorBreakdownOrdersByDescendingCount()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(6, 6, 0, 0, 0, []),
+            [
+                new BacktestModelSummary("Oráculo final", 6, 0.400, 0.700, 0.190, 0.80)
+                {
+                    ChosenPredictorCounts = new Dictionary<string, int>(StringComparer.Ordinal)
+                    {
+                        ["Modelo de goles (Poisson)"] = 3,
+                        ["Goles + contexto reciente"] = 2,
+                        ["Elo"] = 1
+                    }
+                }
+            ]);
+
+        var output = RollingBacktestReportService.Render(report);
+
+        var breakdownIndex = output.IndexOf("## Oráculo final — selector breakdown", StringComparison.Ordinal);
+        var modelGolesIndex = output.IndexOf("| Modelo de goles (Poisson) |", breakdownIndex, StringComparison.Ordinal);
+        var contextoIndex = output.IndexOf("| Goles + contexto reciente |", breakdownIndex, StringComparison.Ordinal);
+        var eloIndex = output.IndexOf("| Elo |", breakdownIndex, StringComparison.Ordinal);
+
+        Assert.True(breakdownIndex >= 0);
+        Assert.True(modelGolesIndex < contextoIndex);
+        Assert.True(contextoIndex < eloIndex);
+    }
+
     private static HistoricalResultCsvRow Row(
         string date,
         string home,

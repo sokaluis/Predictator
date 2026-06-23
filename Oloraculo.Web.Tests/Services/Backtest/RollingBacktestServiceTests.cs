@@ -663,6 +663,97 @@ public class RollingBacktestServiceTests
         Assert.Equal(0, comparison.Coverage.FifaCoveredTargets);
     }
 
+    [Fact]
+    public void Compare_SignalBackedAndDegradedCountsTrackDegradedPredictions()
+    {
+        var targetDate = DateTimeOffset.Parse("2024-01-03T00:00:00Z");
+        var futureDate = DateTimeOffset.Parse("2024-01-04T00:00:00Z");
+        var provider = new InMemoryBacktestRatingSnapshotProvider(
+        [
+            Rating("a", RatingTypeEnum.Elo, 1500, targetDate.AddDays(-1)),
+            Rating("b", RatingTypeEnum.Elo, 1400, targetDate.AddDays(-1)),
+            Rating("d", RatingTypeEnum.Elo, 1450, targetDate.AddDays(-1)),
+            // FIFA covers the first evaluated target, but not the future target with team d.
+            Rating("a", RatingTypeEnum.Fifa, 1600, targetDate.AddDays(-1)),
+            Rating("b", RatingTypeEnum.Fifa, 1500, targetDate.AddDays(-1))
+        ]);
+        var results = new[]
+        {
+            Result("first", "c", "a", "2024-01-01", 1, 1),
+            Result("second", "b", "c", "2024-01-02", 2, 0),
+            Result("second-d", "d", "c", "2024-01-02", 1, 0),
+            Result("target", "a", "b", "2024-01-03", 1, 0),
+            Result("future", "a", "d", "2024-01-04", 0, 1)
+        };
+
+        var comparison = new RollingBacktestService(provider).Compare(results, minimumPriorMatchesPerTeam: 1);
+
+        var eloSummary = comparison.Summaries.Single(summary => summary.ModelName == "Elo");
+        Assert.Equal(2, eloSummary.Count);
+        Assert.Equal(2, eloSummary.SignalBackedCount);
+        Assert.Equal(0, eloSummary.DegradedCount);
+
+        var fifaSummary = comparison.Summaries.Single(summary => summary.ModelName == "Ranking FIFA");
+        Assert.Equal(2, fifaSummary.Count);
+        Assert.Equal(1, fifaSummary.SignalBackedCount);
+        Assert.Equal(1, fifaSummary.DegradedCount);
+
+        var baseSummary = comparison.Summaries.Single(summary => summary.ModelName == "Modelo base");
+        Assert.Equal(2, baseSummary.Count);
+        Assert.Equal(2, baseSummary.SignalBackedCount);
+        Assert.Equal(0, baseSummary.DegradedCount);
+    }
+
+    [Fact]
+    public void Compare_NonDegradedPredictionsAreSignalBacked()
+    {
+        var results = new[]
+        {
+            Result("first", "c", "a", "2024-01-01", 1, 1),
+            Result("second", "b", "c", "2024-01-02", 2, 0),
+            Result("target", "a", "b", "2024-01-03", 1, 0)
+        };
+
+        var strategies = new[]
+        {
+            new BacktestModelStrategy("Modelo base", _ => new NullModel(), ReusePredictorForSamePriorResults: true)
+        };
+
+        var comparison = new RollingBacktestService().Compare(results, strategies, minimumPriorMatchesPerTeam: 1);
+
+        var summary = Assert.Single(comparison.Summaries);
+        Assert.Equal("Modelo base", summary.ModelName);
+        Assert.Equal(summary.Count, summary.SignalBackedCount);
+        Assert.Equal(0, summary.DegradedCount);
+        Assert.Equal(100.0, summary.ReadinessPct, precision: 3);
+    }
+
+    [Fact]
+    public void Compare_RecentFormDegradesWhenEloIsMissing()
+    {
+        var results = new[]
+        {
+            Result("first", "c", "a", "2024-01-01", 1, 1),
+            Result("second", "b", "c", "2024-01-02", 2, 0),
+            Result("target", "a", "b", "2024-01-03", 1, 0)
+        };
+        var strategies = new[]
+        {
+            new BacktestModelStrategy("Forma reciente", _ => new RecentFormModel(), ReusePredictorForSamePriorResults: true)
+        };
+
+        var comparison = new RollingBacktestService().Compare(
+            results,
+            strategies,
+            minimumPriorMatchesPerTeam: 1);
+
+        var summary = Assert.Single(comparison.Summaries);
+        Assert.Equal("Forma reciente", summary.ModelName);
+        Assert.Equal(0, summary.SignalBackedCount);
+        Assert.Equal(1, summary.DegradedCount);
+        Assert.Equal(0.0, summary.ReadinessPct, precision: 3);
+    }
+
     private static MatchResult Result(
         string id,
         string homeTeamId,

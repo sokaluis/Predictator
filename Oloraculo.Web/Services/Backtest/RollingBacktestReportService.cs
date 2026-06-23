@@ -115,6 +115,9 @@ public sealed class RollingBacktestReportService
         }
 
         lines.Add("");
+        AddReadinessLines(lines, report.Summaries);
+
+        lines.Add("");
         lines.Add("| Model | Count | MeanBrier | MeanLogLoss | MeanRPS | TopPickAccuracy |");
         lines.Add("| --- | ---: | ---: | ---: | ---: | ---: |");
 
@@ -194,6 +197,50 @@ public sealed class RollingBacktestReportService
 
         if (!coverage.EloEnabled && !coverage.FifaEnabled)
             lines.Add("Limitations: Elo, FIFA ranking, and RecentForm are intentionally excluded until historical as-of snapshots exist.");
+    }
+
+    private static void AddReadinessLines(
+        List<string> lines,
+        IReadOnlyList<BacktestModelSummary> summaries)
+    {
+        var ratingDependent = summaries
+            .Where(summary => summary.IsRatingDependent)
+            .ToList();
+
+        if (ratingDependent.Count == 0)
+            return;
+
+        lines.Add("## Model readiness and degraded coverage");
+        lines.Add("");
+        lines.Add("| Model | Evaluated | Signal-backed | Degraded | Readiness |");
+        lines.Add("| --- | ---: | ---: | ---: | ---: |");
+
+        foreach (var summary in ratingDependent)
+        {
+            var readiness = summary.ReadinessPct.ToString("F1", CultureInfo.InvariantCulture);
+            var readinessNote = summary.ReadinessPct >= 100.0
+                ? $"{readiness}%"
+                : $"{readiness}% — ⚠ degraded fallback";
+
+            lines.Add(string.Create(
+                CultureInfo.InvariantCulture,
+                $"| {summary.ModelName} | {summary.Count} | {summary.SignalBackedCount} | {summary.DegradedCount} | {readinessNote} |"));
+        }
+
+        var degradedModels = ratingDependent
+            .Where(summary => summary.DegradedCount > 0)
+            .ToList();
+
+        if (degradedModels.Count > 0)
+        {
+            lines.Add("");
+            foreach (var model in degradedModels)
+            {
+                lines.Add(
+                    $"- {model.ModelName}: {model.DegradedCount}/{model.Count} predictions fell back (missing as-of snapshots or required data).");
+            }
+        }
+
     }
 
     private static string DisabledCoverageReason(int eligibleTargets) =>

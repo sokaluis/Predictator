@@ -108,21 +108,21 @@ public sealed class RollingBacktestService
 
         strategies ??= ComparisonStrategiesForResults(goalModelYearsWindow, includeElo, includeFifa);
 
-        var evaluations = new List<PredictionEvaluation>();
-        var segmentedEvaluations = new List<(string SegmentName, PredictionEvaluation Evaluation)>();
+        var evaluations = new List<BacktestPredictionEvaluation>();
+        var segmentedEvaluations = new List<(string SegmentName, BacktestPredictionEvaluation Evaluation)>();
 
         foreach (var strategy in strategies)
         {
             foreach (var point in BuildPredictionPoints(orderedResults, strategy, minimumPriorMatchesPerTeam, targetFilter))
             {
-                var evaluation = ToEvaluation(point.Target, point.Prediction);
+                var evaluation = ToBacktestEvaluation(point.Target, point.Prediction);
                 evaluations.Add(evaluation);
                 segmentedEvaluations.Add((BacktestMatchSegmentClassifier.AllMatches, evaluation));
                 segmentedEvaluations.Add((BacktestMatchSegmentClassifier.Classify(point.Target.Tournament), evaluation));
             }
         }
 
-        return new BacktestComparisonResult(evaluations, Summarize(evaluations))
+        return new BacktestComparisonResult(evaluations.Select(item => item.Evaluation).ToList(), Summarize(evaluations))
         {
             SegmentSummaries = SummarizeSegments(segmentedEvaluations),
             Coverage = coverage
@@ -196,6 +196,9 @@ public sealed class RollingBacktestService
             ? rating
             : null;
 
+    private static BacktestPredictionEvaluation ToBacktestEvaluation(MatchResult target, MatchPrediction prediction) =>
+        new(ToEvaluation(target, prediction), prediction.Degraded);
+
     private static PredictionEvaluation ToEvaluation(MatchResult target, MatchPrediction prediction)
     {
         var actual = EvaluationService.OutcomeFromGoals(target.HomeGoals, target.AwayGoals);
@@ -220,23 +223,34 @@ public sealed class RollingBacktestService
         };
     }
 
-    private static IReadOnlyList<BacktestModelSummary> Summarize(IReadOnlyList<PredictionEvaluation> evaluations) =>
+    private static IReadOnlyList<BacktestModelSummary> Summarize(IReadOnlyList<BacktestPredictionEvaluation> evaluations) =>
         evaluations
-            .GroupBy(evaluation => evaluation.ModelName)
-            .Select(group => new BacktestModelSummary(
-                group.Key,
-                group.Count(),
-                group.Average(evaluation => evaluation.BrierScore),
-                group.Average(evaluation => evaluation.LogLoss),
-                group.Average(evaluation => evaluation.RankedProbabilityScore),
-                group.Average(evaluation => evaluation.TopPickCorrect ? 1.0 : 0.0)))
+            .GroupBy(evaluation => evaluation.Evaluation.ModelName)
+            .Select(group =>
+            {
+                var count = group.Count();
+                var signalBacked = group.Count(evaluation => !evaluation.Degraded);
+                var degraded = count - signalBacked;
+
+                return new BacktestModelSummary(
+                    group.Key,
+                    count,
+                    group.Average(evaluation => evaluation.Evaluation.BrierScore),
+                    group.Average(evaluation => evaluation.Evaluation.LogLoss),
+                    group.Average(evaluation => evaluation.Evaluation.RankedProbabilityScore),
+                    group.Average(evaluation => evaluation.Evaluation.TopPickCorrect ? 1.0 : 0.0))
+                {
+                    SignalBackedCount = signalBacked,
+                    DegradedCount = degraded
+                };
+            })
             .OrderBy(summary => summary.MeanBrier)
             .ThenBy(summary => summary.MeanLogLoss)
             .ThenBy(summary => summary.ModelName, StringComparer.Ordinal)
             .ToList();
 
     private static IReadOnlyList<BacktestSegmentModelSummary> SummarizeSegments(
-        IReadOnlyList<(string SegmentName, PredictionEvaluation Evaluation)> segmentedEvaluations) =>
+        IReadOnlyList<(string SegmentName, BacktestPredictionEvaluation Evaluation)> segmentedEvaluations) =>
         segmentedEvaluations
             .GroupBy(item => item.SegmentName)
             .SelectMany(segmentGroup => Summarize(segmentGroup.Select(item => item.Evaluation).ToList())
@@ -419,7 +433,18 @@ public sealed record BacktestModelSummary(
     double MeanBrier,
     double MeanLogLoss,
     double MeanRps,
-    double TopPickAccuracy);
+    double TopPickAccuracy)
+{
+    public int SignalBackedCount { get; init; } = Count;
+    public int DegradedCount { get; init; }
+
+    public double ReadinessPct => Count > 0 ? SignalBackedCount * 100.0 / Count : 100.0;
+
+    public bool IsRatingDependent =>
+        ModelName is "Elo" or "Ranking FIFA" or "Forma reciente";
+}
+
+internal sealed record BacktestPredictionEvaluation(PredictionEvaluation Evaluation, bool Degraded);
 
 public sealed record BacktestSegmentModelSummary(
     string SegmentName,

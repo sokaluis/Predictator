@@ -79,4 +79,26 @@ public class PredictionServiceTests : TestFixtures
         Assert.True(result.BestPrediction.Outcome.IsValid);
     }
 
+    [Fact]
+    public async Task PredictionService_ReturnsCriteriaWithoutChangingOutcome()
+    {
+        await using var db = await ImportedDb();
+        var fixtures = await db.Fixtures.AsNoTracking().Take(5).ToListAsync();
+        var service = new PredictionService(db, SimulationOptions(1, 1));
+
+        var results = await service.PredictFixturesAsync(fixtures);
+
+        Assert.All(results, result =>
+        {
+            Assert.NotNull(result.Criteria);
+            Assert.NotEmpty(result.Criteria!.Signals);
+            Assert.NotNull(result.Criteria.SelectedPredictorName);
+            Assert.True(result.BestPrediction.Outcome.IsValid);
+
+            // Lineups/odds must never be applied
+            Assert.DoesNotContain(result.Criteria.Applied, s => s.Category == SignalCategory.Lineups);
+            Assert.DoesNotContain(result.Criteria.Applied, s => s.Category == SignalCategory.Odds);
+        });
+    }
+
 }

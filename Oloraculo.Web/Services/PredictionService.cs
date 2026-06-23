@@ -51,6 +51,7 @@ namespace Oloraculo.Web.Services
         {
             var context = await BuildContextAsync(fixture, ct);
             var ladder = predictors.Select(p => p.Predict(context)).ToList();
+            var best = FinalPredictionSelector.Select(ladder);
 
             return new MatchPredictionResult
             {
@@ -58,7 +59,8 @@ namespace Oloraculo.Web.Services
                 HomeTeamName = context.HomeTeam.Name,
                 AwayTeamName = context.AwayTeam.Name,
                 Predictions = ladder,
-                BestPrediction = FinalPredictionSelector.Select(ladder)
+                BestPrediction = best,
+                Criteria = PredictionCriteriaBuilder.Build(context, ladder, best)
             };
         }
 

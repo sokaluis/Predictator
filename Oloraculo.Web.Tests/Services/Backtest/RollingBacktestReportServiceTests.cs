@@ -721,6 +721,114 @@ public class RollingBacktestReportServiceTests
         Assert.True(contextoIndex < eloIndex);
     }
 
+    [Fact]
+    public void Render_PrintsOracleChosenPredictorCountsBySegment()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(6, 6, 0, 0, 0, []),
+            [
+                new BacktestModelSummary("Modelo base", 6, 0.667, 1.099, 0.333, 0.5),
+                new BacktestModelSummary("Oráculo final", 6, 0.400, 0.700, 0.190, 0.80)
+            ])
+        {
+            SegmentSummaries =
+            [
+                SegmentSummaryWithOracle(
+                    BacktestMatchSegmentClassifier.Friendlies,
+                    "Oráculo final", 4,
+                    new Dictionary<string, int>(StringComparer.Ordinal)
+                    {
+                        ["Modelo de goles (Poisson)"] = 3,
+                        ["Elo"] = 1
+                    }),
+                SegmentSummaryWithOracle(
+                    BacktestMatchSegmentClassifier.WorldCupQualifiers,
+                    "Oráculo final", 2,
+                    new Dictionary<string, int>(StringComparer.Ordinal)
+                    {
+                        ["Goles + contexto reciente"] = 2
+                    })
+            ]
+        };
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.Contains("## Oráculo final — chosen predictor counts by segment", output);
+        Assert.Contains("| Segment | Chosen predictor | Count |", output);
+        Assert.Contains("| Friendlies | Modelo de goles (Poisson) | 3 |", output);
+        Assert.Contains("| Friendlies | Elo | 1 |", output);
+        Assert.Contains("| World Cup qualifiers | Goles + contexto reciente | 2 |", output);
+    }
+
+    [Fact]
+    public void Render_OmitsOracleSegmentBreakdownWhenNoOracleSegments()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(4, 4, 0, 0, 0, []),
+            [new BacktestModelSummary("Modelo base", 4, 0.667, 1.099, 0.333, 0.5)])
+        {
+            SegmentSummaries =
+            [
+                new BacktestSegmentModelSummary(
+                    BacktestMatchSegmentClassifier.Friendlies,
+                    new BacktestModelSummary("Modelo base", 2, 0.500, 0.700, 0.200, 1.0))
+            ]
+        };
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.DoesNotContain("## Oráculo final — chosen predictor counts by segment", output);
+    }
+
+    [Fact]
+    public void Render_OmitsOracleSegmentBreakdownWhenOracleSegmentsHaveNoChosenCounts()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(4, 4, 0, 0, 0, []),
+            [new BacktestModelSummary("Oráculo final", 4, 0.400, 0.700, 0.190, 0.80)])
+        {
+            SegmentSummaries =
+            [
+                new BacktestSegmentModelSummary(
+                    BacktestMatchSegmentClassifier.Friendlies,
+                    new BacktestModelSummary("Oráculo final", 2, 0.400, 0.700, 0.190, 0.80))
+            ]
+        };
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.DoesNotContain("## Oráculo final — chosen predictor counts by segment", output);
+    }
+
+    [Fact]
+    public void Render_OracleSegmentBreakdownKeepsSegmentSummaryOrder()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(4, 4, 0, 0, 0, []),
+            [new BacktestModelSummary("Oráculo final", 4, 0.400, 0.700, 0.190, 0.80)])
+        {
+            SegmentSummaries =
+            [
+                SegmentSummaryWithOracle(
+                    BacktestMatchSegmentClassifier.WorldCupQualifiers,
+                    "Oráculo final", 2,
+                    new Dictionary<string, int>(StringComparer.Ordinal) { ["Elo"] = 2 }),
+                SegmentSummaryWithOracle(
+                    BacktestMatchSegmentClassifier.Friendlies,
+                    "Oráculo final", 2,
+                    new Dictionary<string, int>(StringComparer.Ordinal) { ["Elo"] = 2 })
+            ]
+        };
+
+        var output = RollingBacktestReportService.Render(report);
+
+        var sectionStart = output.IndexOf("## Oráculo final — chosen predictor counts by segment", StringComparison.Ordinal);
+        var friendliesIndex = output.IndexOf("| Friendlies |", sectionStart, StringComparison.Ordinal);
+        var wcQualifiersIndex = output.IndexOf("| World Cup qualifiers |", sectionStart, StringComparison.Ordinal);
+
+        Assert.True(wcQualifiersIndex < friendliesIndex);
+    }
+
     private static HistoricalResultCsvRow Row(
         string date,
         string home,
@@ -748,4 +856,14 @@ public class RollingBacktestReportServiceTests
         double rps,
         double topPickAccuracy) =>
         new(segment, new BacktestModelSummary(model, count, brier, logLoss, rps, topPickAccuracy));
+
+    private static BacktestSegmentModelSummary SegmentSummaryWithOracle(
+        string segment,
+        string model,
+        int count,
+        IReadOnlyDictionary<string, int> chosenPredictorCounts) =>
+        new(segment, new BacktestModelSummary(model, count, 0.400, 0.700, 0.190, 0.80)
+        {
+            ChosenPredictorCounts = chosenPredictorCounts
+        });
 }

@@ -93,14 +93,15 @@ public sealed class RollingBacktestService
         int goalModelYearsWindow = 8,
         Func<MatchResult, bool>? targetFilter = null)
     {
-        strategies ??= DefaultComparisonStrategies(goalModelYearsWindow);
+        var orderedResults = OrderByDate(results);
+        strategies ??= ComparisonStrategiesForResults(orderedResults, minimumPriorMatchesPerTeam, goalModelYearsWindow, targetFilter);
 
         var evaluations = new List<PredictionEvaluation>();
         var segmentedEvaluations = new List<(string SegmentName, PredictionEvaluation Evaluation)>();
 
         foreach (var strategy in strategies)
         {
-            foreach (var point in BuildPredictionPoints(results, strategy, minimumPriorMatchesPerTeam, targetFilter))
+            foreach (var point in BuildPredictionPoints(orderedResults, strategy, minimumPriorMatchesPerTeam, targetFilter))
             {
                 var evaluation = ToEvaluation(point.Target, point.Prediction);
                 evaluations.Add(evaluation);
@@ -250,6 +251,70 @@ public sealed class RollingBacktestService
     private static void IncrementTeamCount(IDictionary<string, int> countsByTeam, string teamId) =>
         countsByTeam[teamId] = countsByTeam.TryGetValue(teamId, out var count) ? count + 1 : 1;
 
+    private IReadOnlyList<BacktestModelStrategy> ComparisonStrategiesForResults(
+        IReadOnlyList<MatchResult> results,
+        int minimumPriorMatchesPerTeam,
+        int goalModelYearsWindow,
+        Func<MatchResult, bool>? targetFilter)
+    {
+        var strategies = DefaultComparisonStrategies(goalModelYearsWindow).ToList();
+        var eligibleTargets = EligibleTargets(results, minimumPriorMatchesPerTeam, targetFilter).ToList();
+
+        AddRatingAwareStrategies(
+            strategies,
+            includeElo: eligibleTargets.Any(target => _ratingSnapshotProvider.HasAsOfSnapshotPair(
+                RatingTypeEnum.Elo,
+                target.Date,
+                target.HomeTeamId,
+                target.AwayTeamId)),
+            includeFifa: eligibleTargets.Any(target => _ratingSnapshotProvider.HasAsOfSnapshotPair(
+                RatingTypeEnum.Fifa,
+                target.Date,
+                target.HomeTeamId,
+                target.AwayTeamId)));
+
+        return strategies;
+    }
+
+    private static IEnumerable<MatchResult> EligibleTargets(
+        IReadOnlyList<MatchResult> ordered,
+        int minimumPriorMatchesPerTeam,
+        Func<MatchResult, bool>? targetFilter)
+    {
+        var priorCountsByTeam = new Dictionary<string, int>(StringComparer.Ordinal);
+
+        foreach (var targetsOnDate in ordered.GroupBy(result => result.Date))
+        {
+            foreach (var target in targetsOnDate)
+            {
+                if ((targetFilter is null || targetFilter(target)) &&
+                    HasEnoughPriorData(target, priorCountsByTeam, minimumPriorMatchesPerTeam))
+                    yield return target;
+            }
+
+            foreach (var result in targetsOnDate)
+            {
+                IncrementTeamCount(priorCountsByTeam, result.HomeTeamId);
+                IncrementTeamCount(priorCountsByTeam, result.AwayTeamId);
+            }
+        }
+    }
+
+    private static void AddRatingAwareStrategies(
+        ICollection<BacktestModelStrategy> strategies,
+        bool includeElo,
+        bool includeFifa)
+    {
+        if (includeElo)
+        {
+            strategies.Add(new BacktestModelStrategy("Elo", _ => new EloModel(), ReusePredictorForSamePriorResults: true));
+            strategies.Add(new BacktestModelStrategy("Forma reciente", _ => new RecentFormModel(), ReusePredictorForSamePriorResults: true));
+        }
+
+        if (includeFifa)
+            strategies.Add(new BacktestModelStrategy("Ranking FIFA", _ => new FifaRankingModel(), ReusePredictorForSamePriorResults: true));
+    }
+
     private static IReadOnlyList<MatchResult> RecentTeamResults(
         IEnumerable<MatchResult> results,
         string teamId) =>
@@ -271,6 +336,8 @@ public sealed record BacktestModelStrategy(
 
 public interface IBacktestRatingSnapshotProvider
 {
+    bool HasAsOfSnapshotPair(RatingTypeEnum type, DateTimeOffset targetDate, string homeTeamId, string awayTeamId);
+
     BacktestRatingSnapshot? GetSnapshot(DateTimeOffset targetDate, string homeTeamId, string awayTeamId);
 }
 
@@ -288,7 +355,44 @@ public sealed class BacktestRatingSnapshotProvider : IBacktestRatingSnapshotProv
     {
     }
 
+    public bool HasAsOfSnapshotPair(RatingTypeEnum type, DateTimeOffset targetDate, string homeTeamId, string awayTeamId) => false;
+
     public BacktestRatingSnapshot? GetSnapshot(DateTimeOffset targetDate, string homeTeamId, string awayTeamId) => null;
+}
+
+public sealed class InMemoryBacktestRatingSnapshotProvider : IBacktestRatingSnapshotProvider
+{
+    private readonly IReadOnlyList<Rating> _ratings;
+
+    public InMemoryBacktestRatingSnapshotProvider(IEnumerable<Rating> ratings)
+    {
+        _ratings = ratings.ToList();
+    }
+
+    public bool HasAsOfSnapshotPair(RatingTypeEnum type, DateTimeOffset targetDate, string homeTeamId, string awayTeamId) =>
+        LatestAsOf(targetDate, homeTeamId, type) is not null &&
+        LatestAsOf(targetDate, awayTeamId, type) is not null;
+
+    public BacktestRatingSnapshot? GetSnapshot(DateTimeOffset targetDate, string homeTeamId, string awayTeamId)
+    {
+        var homeElo = LatestAsOf(targetDate, homeTeamId, RatingTypeEnum.Elo);
+        var awayElo = LatestAsOf(targetDate, awayTeamId, RatingTypeEnum.Elo);
+        var homeFifa = LatestAsOf(targetDate, homeTeamId, RatingTypeEnum.Fifa);
+        var awayFifa = LatestAsOf(targetDate, awayTeamId, RatingTypeEnum.Fifa);
+
+        return homeElo is null && awayElo is null && homeFifa is null && awayFifa is null
+            ? null
+            : new BacktestRatingSnapshot(homeElo, awayElo, homeFifa, awayFifa);
+    }
+
+    private Rating? LatestAsOf(DateTimeOffset targetDate, string teamId, RatingTypeEnum type) =>
+        _ratings
+            .Where(rating =>
+                rating.TeamId == teamId &&
+                rating.Type == type &&
+                rating.AsOf <= targetDate)
+            .OrderByDescending(rating => rating.AsOf)
+            .FirstOrDefault();
 }
 
 public sealed record BacktestComparisonResult(

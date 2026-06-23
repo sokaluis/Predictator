@@ -480,6 +480,102 @@ public class RollingBacktestReportServiceTests
         Assert.DoesNotContain("Limitations:", output);
     }
 
+    [Fact]
+    public void Render_PrintsReadinessSectionWhenRatingAwareModelsPresent()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(4, 4, 0, 0, 0, []),
+            [
+                new BacktestModelSummary("Modelo base", 2, 0.667, 1.099, 0.333, 0.5),
+                new BacktestModelSummary("Elo", 2, 0.500, 0.800, 0.250, 0.6)
+                {
+                    SignalBackedCount = 2,
+                    DegradedCount = 0
+                },
+                new BacktestModelSummary("Ranking FIFA", 2, 0.550, 0.900, 0.280, 0.4)
+                {
+                    SignalBackedCount = 1,
+                    DegradedCount = 1
+                }
+            ])
+        {
+            Coverage = new BacktestCoverageInfo(2, 2, 2, true, true)
+        };
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.Contains("## Model readiness and degraded coverage", output);
+        Assert.Contains("| Model | Evaluated | Signal-backed | Degraded | Readiness |", output);
+        Assert.Contains("| Elo | 2 | 2 | 0 | 100.0%", output);
+        Assert.Contains("| Ranking FIFA | 2 | 1 | 1 | 50.0% — ⚠ degraded fallback", output);
+        Assert.Contains("Ranking FIFA: 1/2 predictions fell back", output);
+        Assert.DoesNotContain("Non-rating-dependent models always signal-backed:", output);
+    }
+
+    [Fact]
+    public void Render_SkipsReadinessSectionWhenNoRatingAwareModels()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(4, 4, 0, 0, 0, []),
+            [
+                new BacktestModelSummary("Modelo base", 2, 0.667, 1.099, 0.333, 0.5),
+                new BacktestModelSummary("Modelo de goles (Poisson)", 2, 0.550, 0.900, 0.280, 0.6)
+            ]);
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.DoesNotContain("## Model readiness and degraded coverage", output);
+    }
+
+    [Fact]
+    public void Render_ReadinessSectionShowsOnlyRatingDependentModels()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(4, 4, 0, 0, 0, []),
+            [
+                new BacktestModelSummary("Modelo base", 2, 0.667, 1.099, 0.333, 0.5),
+                new BacktestModelSummary("Modelo de goles (Poisson)", 2, 0.550, 0.900, 0.280, 0.6),
+                new BacktestModelSummary("Elo", 2, 0.500, 0.800, 0.250, 0.6)
+                {
+                    SignalBackedCount = 2,
+                    DegradedCount = 0
+                }
+            ]);
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.Contains("## Model readiness and degraded coverage", output);
+        Assert.Contains("| Elo | 2 | 2 | 0 | 100.0%", output);
+        var readinessStart = output.IndexOf("## Model readiness and degraded coverage", StringComparison.Ordinal);
+        var metricsStart = output.IndexOf("| Model | Count |", StringComparison.Ordinal);
+        var readinessSection = output[readinessStart..metricsStart];
+        // The readiness table should NOT contain non-rating-dependent models
+        Assert.DoesNotContain("| Modelo base |", readinessSection);
+        Assert.DoesNotContain("| Modelo de goles (Poisson) |", readinessSection);
+    }
+
+    [Fact]
+    public void Render_ReadinessSectionShowsAllDegradedWhenNoSnapshotPairs()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(4, 4, 0, 0, 0, []),
+            [
+                new BacktestModelSummary("Elo", 3, 0.667, 1.099, 0.333, 0.5)
+                {
+                    SignalBackedCount = 0,
+                    DegradedCount = 3
+                }
+            ])
+        {
+            Coverage = new BacktestCoverageInfo(3, 0, 0, false, false)
+        };
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.Contains("| Elo | 3 | 0 | 3 | 0.0% — ⚠ degraded fallback", output);
+        Assert.Contains("Elo: 3/3 predictions fell back", output);
+    }
+
     private static HistoricalResultCsvRow Row(
         string date,
         string home,

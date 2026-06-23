@@ -67,6 +67,32 @@
                 }
             </ul>
         }
+
+        @if (Criteria is not null)
+        {
+            <MudText Typo="Typo.caption" Color="Color.Secondary" Class="section-label mt-3">Señales</MudText>
+            <MudStack Row="true" Spacing="1" Class="chip-wrap">
+                <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Outlined">
+                    @Criteria.Applied.Count() usadas
+                </MudChip>
+                <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined">
+                    @Criteria.Available.Count() disponibles
+                </MudChip>
+                <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Outlined">
+                    @Criteria.Missing.Count() faltantes
+                </MudChip>
+            </MudStack>
+            <ul class="driver-list mt-1">
+                @foreach (var signal in Criteria.Applied)
+                {
+                    <li><strong>@signal.Name</strong>: @signal.Detail</li>
+                }
+                @foreach (var signal in Criteria.Available)
+                {
+                    <li>@signal.Name: @signal.Detail</li>
+                }
+            </ul>
+        }
     }
 </MudPaper>
 
@@ -75,4 +101,5 @@
     [Parameter] public string HomeLabel { get; set; } = "Local";
     [Parameter] public string AwayLabel { get; set; } = "Visitante";
     [Parameter] public bool ShowDetails { get; set; } = true;
+    [Parameter] public PredictionCriteria? Criteria { get; set; }
 }

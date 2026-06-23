@@ -7,5 +7,6 @@
         public required string AwayTeamName { get; set; }
         public IReadOnlyList<MatchPrediction> Predictions { get; set; } = Array.Empty<MatchPrediction>();
         public required MatchPrediction BestPrediction { get; init; }
+        public PredictionCriteria? Criteria { get; set; }
     }
 }

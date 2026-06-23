@@ -150,7 +150,7 @@
 
                     @if (_result is not null)
                     {
-                        <PredictionCard Prediction="@_result.BestPrediction" HomeLabel="@_result.HomeTeamName" AwayLabel="@_result.AwayTeamName" />
+                        <PredictionCard Prediction="@_result.BestPrediction" HomeLabel="@_result.HomeTeamName" AwayLabel="@_result.AwayTeamName" Criteria="@_result.Criteria" />
                     }
 
                     @if (_availabilityClaims.Count > 0)

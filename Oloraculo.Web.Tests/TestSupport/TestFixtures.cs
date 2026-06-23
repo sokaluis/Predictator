@@ -86,7 +86,8 @@ public abstract class TestFixtures
         bool degraded = false,
         IReadOnlyList<string>? missing = null,
         ScorelineDistribution? scoreline = null,
-        IReadOnlyList<SourceMetadata>? sources = null) => new()
+        IReadOnlyList<SourceMetadata>? sources = null,
+        IReadOnlyList<string>? featuresUsed = null) => new()
     {
         PredictorPriority = priority,
         PredictorName = name,
@@ -96,6 +97,7 @@ public abstract class TestFixtures
         Outcome = new OutcomeProbabilities(home, draw, away).Normalize(),
         Scoreline = scoreline,
         Explanation = name,
+        FeaturesUsed = featuresUsed ?? [],
         FeaturesMissing = missing ?? [],
         Sources = sources ?? [],
         Degraded = degraded

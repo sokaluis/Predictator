@@ -136,6 +136,7 @@ public sealed class RollingBacktestReportService
             $"| {summary.ModelName} | {summary.Count} | {summary.MeanBrier:0.0000} | {summary.MeanLogLoss:0.0000} | {summary.MeanRps:0.0000} | {summary.TopPickAccuracy:P1} |")));
 
         AddOracleSelectorBreakdown(lines, report.Summaries);
+        AddOracleSegmentBreakdown(lines, report.SegmentSummaries);
 
         if (report.SegmentSummaries.Count > 0)
         {
@@ -223,6 +224,35 @@ public sealed class RollingBacktestReportService
             .ThenBy(kv => kv.Key, StringComparer.Ordinal))
         {
             lines.Add($"| {predictor} | {count} |");
+        }
+    }
+
+    private static void AddOracleSegmentBreakdown(
+        List<string> lines,
+        IReadOnlyList<BacktestSegmentModelSummary> segmentSummaries)
+    {
+        var oracleSegments = segmentSummaries
+            .Where(s => string.Equals(s.Summary.ModelName, "Oráculo final", StringComparison.Ordinal))
+            .Where(s => s.Summary.ChosenPredictorCounts.Count > 0)
+            .ToList();
+
+        if (oracleSegments.Count == 0)
+            return;
+
+        lines.Add("");
+        lines.Add("## Oráculo final — chosen predictor counts by segment");
+        lines.Add("");
+        lines.Add("| Segment | Chosen predictor | Count |");
+        lines.Add("| --- | --- | ---: |");
+
+        foreach (var segment in oracleSegments)
+        {
+            foreach (var (predictor, count) in segment.Summary.ChosenPredictorCounts
+                .OrderByDescending(kv => kv.Value)
+                .ThenBy(kv => kv.Key, StringComparer.Ordinal))
+            {
+                lines.Add($"| {segment.SegmentName} | {predictor} | {count} |");
+            }
         }
     }
 

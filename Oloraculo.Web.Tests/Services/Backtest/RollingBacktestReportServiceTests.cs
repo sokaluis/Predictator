@@ -394,6 +394,92 @@ public class RollingBacktestReportServiceTests
         Assert.Contains("Evaluation window: 2024-01-02 to 2024-01-03", output);
     }
 
+    [Fact]
+    public void GenerateFromCsv_IncludesCoverageInReport()
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllText(path, string.Join(Environment.NewLine,
+            [
+                "date,home_team,away_team,home_score,away_score,tournament,neutral",
+                "2024-01-01,C,A,1,1,Friendly,TRUE",
+                "2024-01-01,B,C,2,0,Friendly,TRUE",
+                "2024-01-02,A,B,1,0,FIFA World Cup,TRUE"
+            ]));
+
+            var report = new RollingBacktestReportService().GenerateFromCsv(path,
+                new BacktestReportOptions(MinimumPriorMatchesPerTeam: 1));
+
+            Assert.NotNull(report.Coverage);
+            Assert.Equal(1, report.Coverage.EligibleTargets);
+            Assert.Equal(0, report.Coverage.EloCoveredTargets);
+            Assert.Equal(0, report.Coverage.FifaCoveredTargets);
+            Assert.False(report.Coverage.EloEnabled);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void Render_PrintsCoverageInfoWhenCoverageAvailable()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(3, 2, 1, 0, 0, []),
+            [new BacktestModelSummary("Modelo base", 2, 0.667, 1.099, 0.333, 0.5)])
+        {
+            Coverage = new BacktestCoverageInfo(500, 450, 200, true, true)
+        };
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.Contains("Rating snapshot coverage", output);
+        Assert.Contains("Eligible targets: 500", output);
+        Assert.Contains("Elo: 450/500 targets (90.0%) — enabled", output);
+        Assert.Contains("FIFA: 200/500 targets (40.0%) — enabled", output);
+        Assert.Contains("RecentForm: enabled (requires Elo coverage)", output);
+    }
+
+    [Fact]
+    public void Render_PrintsCoverageInfoWithDisabledModels()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(3, 2, 1, 0, 0, []),
+            [new BacktestModelSummary("Modelo base", 2, 0.667, 1.099, 0.333, 0.5)])
+        {
+            Coverage = new BacktestCoverageInfo(500, 0, 0, false, false)
+        };
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.Contains("Rating snapshot coverage", output);
+        Assert.Contains("Eligible targets: 500", output);
+        Assert.Contains("Elo: 0/500 targets (0.0%) — disabled, no as-of snapshot pairs", output);
+        Assert.Contains("FIFA: 0/500 targets (0.0%) — disabled, no as-of snapshot pairs", output);
+        Assert.Contains("RecentForm: disabled (requires Elo coverage)", output);
+        Assert.Contains("Limitations: Elo, FIFA ranking, and RecentForm are intentionally excluded", output);
+    }
+
+    [Fact]
+    public void Render_PrintsCoverageInfoWithEloOnly()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(3, 2, 1, 0, 0, []),
+            [new BacktestModelSummary("Modelo base", 2, 0.667, 1.099, 0.333, 0.5)])
+        {
+            Coverage = new BacktestCoverageInfo(300, 250, 0, true, false)
+        };
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.Contains("Elo: 250/300 targets (83.3%) — enabled", output);
+        Assert.Contains("FIFA: 0/300 targets (0.0%) — disabled, no as-of snapshot pairs", output);
+        Assert.Contains("RecentForm: enabled (requires Elo coverage)", output);
+        Assert.DoesNotContain("Limitations:", output);
+    }
+
     private static HistoricalResultCsvRow Row(
         string date,
         string home,

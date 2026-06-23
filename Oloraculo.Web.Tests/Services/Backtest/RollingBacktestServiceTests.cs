@@ -558,6 +558,111 @@ public class RollingBacktestServiceTests
         Assert.Contains("Faltan ratings Elo", point.Prediction.Explanation);
     }
 
+    [Fact]
+    public void Compare_CoverageInfoCountsEligibleTargetsCorrectly()
+    {
+        var results = new[]
+        {
+            Result("first", "c", "a", "2024-01-01", 1, 1),
+            Result("second", "b", "c", "2024-01-02", 2, 0),
+            Result("target", "a", "b", "2024-01-03", 1, 0),
+            Result("future", "a", "b", "2024-01-04", 0, 1)
+        };
+
+        var comparison = new RollingBacktestService().Compare(results, minimumPriorMatchesPerTeam: 1);
+
+        Assert.NotNull(comparison.Coverage);
+        Assert.Equal(2, comparison.Coverage.EligibleTargets);
+        Assert.Equal(0, comparison.Coverage.EloCoveredTargets);
+        Assert.Equal(0, comparison.Coverage.FifaCoveredTargets);
+        Assert.False(comparison.Coverage.EloEnabled);
+        Assert.False(comparison.Coverage.FifaEnabled);
+        Assert.False(comparison.Coverage.RecentFormEnabled);
+    }
+
+    [Fact]
+    public void Compare_CoverageInfoReflectsEloFifaCoverage()
+    {
+        var targetDate = DateTimeOffset.Parse("2024-01-03T00:00:00Z");
+        var provider = new InMemoryBacktestRatingSnapshotProvider(
+        [
+            Rating("a", RatingTypeEnum.Elo, 1500, targetDate.AddDays(-1)),
+            Rating("b", RatingTypeEnum.Elo, 1400, targetDate.AddDays(-1)),
+            Rating("a", RatingTypeEnum.Fifa, 1600, targetDate.AddDays(-1)),
+            Rating("b", RatingTypeEnum.Fifa, 1300, targetDate.AddDays(-1))
+        ]);
+        var results = RatingGatedResults();
+
+        var comparison = new RollingBacktestService(provider).Compare(results, minimumPriorMatchesPerTeam: 1);
+
+        Assert.NotNull(comparison.Coverage);
+        Assert.Equal(1, comparison.Coverage.EligibleTargets);
+        Assert.Equal(1, comparison.Coverage.EloCoveredTargets);
+        Assert.Equal(1, comparison.Coverage.FifaCoveredTargets);
+        Assert.True(comparison.Coverage.EloEnabled);
+        Assert.True(comparison.Coverage.FifaEnabled);
+        Assert.True(comparison.Coverage.RecentFormEnabled);
+    }
+
+    [Fact]
+    public void Compare_CoverageInfoComputedEvenWithCustomStrategies()
+    {
+        var results = new[]
+        {
+            Result("first", "c", "a", "2024-01-01", 1, 1),
+            Result("second", "b", "c", "2024-01-02", 2, 0),
+            Result("target", "a", "b", "2024-01-03", 1, 0)
+        };
+        var strategies = new[] { Strategy("custom", OutcomeProbabilities.Uniform) };
+
+        var comparison = new RollingBacktestService().Compare(
+            results, strategies, minimumPriorMatchesPerTeam: 1);
+
+        Assert.NotNull(comparison.Coverage);
+        Assert.Equal(1, comparison.Coverage.EligibleTargets);
+    }
+
+    [Fact]
+    public void Compare_CoverageInfoReflectsTargetFilter()
+    {
+        var results = new[]
+        {
+            Result("first", "c", "a", "2024-01-01", 1, 1),
+            Result("second", "b", "c", "2024-01-02", 2, 0),
+            Result("target", "a", "b", "2024-01-03", 1, 0),
+            Result("future", "a", "b", "2024-01-04", 0, 1)
+        };
+
+        var comparison = new RollingBacktestService().Compare(
+            results,
+            minimumPriorMatchesPerTeam: 1,
+            targetFilter: result => result.Id == "target");
+
+        Assert.NotNull(comparison.Coverage);
+        Assert.Equal(1, comparison.Coverage.EligibleTargets);
+    }
+
+    [Fact]
+    public void Compare_CoverageInfoShowsEloOnlyWhenFifaSnapshotsMissing()
+    {
+        var targetDate = DateTimeOffset.Parse("2024-01-03T00:00:00Z");
+        var provider = new InMemoryBacktestRatingSnapshotProvider(
+        [
+            Rating("a", RatingTypeEnum.Elo, 1500, targetDate.AddDays(-1)),
+            Rating("b", RatingTypeEnum.Elo, 1400, targetDate.AddDays(-1))
+        ]);
+        var results = RatingGatedResults();
+
+        var comparison = new RollingBacktestService(provider).Compare(results, minimumPriorMatchesPerTeam: 1);
+
+        Assert.NotNull(comparison.Coverage);
+        Assert.True(comparison.Coverage.EloEnabled);
+        Assert.True(comparison.Coverage.RecentFormEnabled);
+        Assert.False(comparison.Coverage.FifaEnabled);
+        Assert.Equal(1, comparison.Coverage.EloCoveredTargets);
+        Assert.Equal(0, comparison.Coverage.FifaCoveredTargets);
+    }
+
     private static MatchResult Result(
         string id,
         string homeTeamId,

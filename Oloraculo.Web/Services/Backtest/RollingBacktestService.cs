@@ -94,7 +94,19 @@ public sealed class RollingBacktestService
         Func<MatchResult, bool>? targetFilter = null)
     {
         var orderedResults = OrderByDate(results);
-        strategies ??= ComparisonStrategiesForResults(orderedResults, minimumPriorMatchesPerTeam, goalModelYearsWindow, targetFilter);
+
+        // Compute eligible targets once for coverage and strategy selection.
+        var eligibleTargets = EligibleTargets(orderedResults, minimumPriorMatchesPerTeam, targetFilter).ToList();
+        var eloCoveredCount = eligibleTargets.Count(target => _ratingSnapshotProvider.HasAsOfSnapshotPair(
+            RatingTypeEnum.Elo, target.Date, target.HomeTeamId, target.AwayTeamId));
+        var fifaCoveredCount = eligibleTargets.Count(target => _ratingSnapshotProvider.HasAsOfSnapshotPair(
+            RatingTypeEnum.Fifa, target.Date, target.HomeTeamId, target.AwayTeamId));
+        var includeElo = eloCoveredCount > 0;
+        var includeFifa = fifaCoveredCount > 0;
+
+        var coverage = new BacktestCoverageInfo(eligibleTargets.Count, eloCoveredCount, fifaCoveredCount, includeElo, includeFifa);
+
+        strategies ??= ComparisonStrategiesForResults(goalModelYearsWindow, includeElo, includeFifa);
 
         var evaluations = new List<PredictionEvaluation>();
         var segmentedEvaluations = new List<(string SegmentName, PredictionEvaluation Evaluation)>();
@@ -112,7 +124,8 @@ public sealed class RollingBacktestService
 
         return new BacktestComparisonResult(evaluations, Summarize(evaluations))
         {
-            SegmentSummaries = SummarizeSegments(segmentedEvaluations)
+            SegmentSummaries = SummarizeSegments(segmentedEvaluations),
+            Coverage = coverage
         };
     }
 
@@ -251,27 +264,14 @@ public sealed class RollingBacktestService
     private static void IncrementTeamCount(IDictionary<string, int> countsByTeam, string teamId) =>
         countsByTeam[teamId] = countsByTeam.TryGetValue(teamId, out var count) ? count + 1 : 1;
 
-    private IReadOnlyList<BacktestModelStrategy> ComparisonStrategiesForResults(
-        IReadOnlyList<MatchResult> results,
-        int minimumPriorMatchesPerTeam,
+    private static IReadOnlyList<BacktestModelStrategy> ComparisonStrategiesForResults(
         int goalModelYearsWindow,
-        Func<MatchResult, bool>? targetFilter)
+        bool includeElo,
+        bool includeFifa)
     {
         var strategies = DefaultComparisonStrategies(goalModelYearsWindow).ToList();
-        var eligibleTargets = EligibleTargets(results, minimumPriorMatchesPerTeam, targetFilter).ToList();
 
-        AddRatingAwareStrategies(
-            strategies,
-            includeElo: eligibleTargets.Any(target => _ratingSnapshotProvider.HasAsOfSnapshotPair(
-                RatingTypeEnum.Elo,
-                target.Date,
-                target.HomeTeamId,
-                target.AwayTeamId)),
-            includeFifa: eligibleTargets.Any(target => _ratingSnapshotProvider.HasAsOfSnapshotPair(
-                RatingTypeEnum.Fifa,
-                target.Date,
-                target.HomeTeamId,
-                target.AwayTeamId)));
+        AddRatingAwareStrategies(strategies, includeElo, includeFifa);
 
         return strategies;
     }
@@ -395,11 +395,22 @@ public sealed class InMemoryBacktestRatingSnapshotProvider : IBacktestRatingSnap
             .FirstOrDefault();
 }
 
+public sealed record BacktestCoverageInfo(
+    int EligibleTargets,
+    int EloCoveredTargets,
+    int FifaCoveredTargets,
+    bool EloEnabled,
+    bool FifaEnabled)
+{
+    public bool RecentFormEnabled => EloEnabled;
+}
+
 public sealed record BacktestComparisonResult(
     IReadOnlyList<PredictionEvaluation> Evaluations,
     IReadOnlyList<BacktestModelSummary> Summaries)
 {
     public IReadOnlyList<BacktestSegmentModelSummary> SegmentSummaries { get; init; } = [];
+    public BacktestCoverageInfo? Coverage { get; init; }
 }
 
 public sealed record BacktestModelSummary(

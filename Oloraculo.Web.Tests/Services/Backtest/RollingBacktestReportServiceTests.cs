@@ -576,6 +576,70 @@ public class RollingBacktestReportServiceTests
         Assert.Contains("Elo: 3/3 predictions fell back", output);
     }
 
+    [Fact]
+    public void Render_ReadinessSectionIncludesDegradedReasonBreakdown()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(6, 6, 0, 0, 0, []),
+            [
+                new BacktestModelSummary("Elo", 4, 0.500, 0.800, 0.250, 0.6)
+                {
+                    SignalBackedCount = 0,
+                    DegradedCount = 4,
+                    DegradedReasonCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["ratings Elo"] = 4
+                    }
+                },
+                new BacktestModelSummary("Ranking FIFA", 2, 0.550, 0.900, 0.280, 0.4)
+                {
+                    SignalBackedCount = 0,
+                    DegradedCount = 2,
+                    DegradedReasonCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["ranking FIFA"] = 2
+                    }
+                }
+            ])
+        {
+            Coverage = new BacktestCoverageInfo(6, 0, 0, false, false)
+        };
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.Contains("## Model readiness and degraded coverage", output);
+        Assert.Contains("| Elo | 4 | 0 | 4 | 0.0% — ⚠ degraded fallback", output);
+        Assert.Contains("| Ranking FIFA | 2 | 0 | 2 | 0.0% — ⚠ degraded fallback", output);
+        Assert.Contains("- Elo: 4/4 predictions fell back", output);
+        Assert.Contains("  • ratings Elo: 4", output);
+        Assert.Contains("- Ranking FIFA: 2/2 predictions fell back", output);
+        Assert.Contains("  • ranking FIFA: 2", output);
+    }
+
+    [Fact]
+    public void Render_ReadinessSectionOmitsReasonBulletsWhenNoReasonCountsAvailable()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(4, 4, 0, 0, 0, []),
+            [
+                new BacktestModelSummary("Elo", 3, 0.667, 1.099, 0.333, 0.5)
+                {
+                    SignalBackedCount = 0,
+                    DegradedCount = 3,
+                    DegradedReasonCounts = new Dictionary<string, int>()
+                }
+            ])
+        {
+            Coverage = new BacktestCoverageInfo(3, 0, 0, false, false)
+        };
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.Contains("- Elo: 3/3 predictions fell back", output);
+        // The reason bullet prefix should NOT appear when no reasons are tracked
+        Assert.DoesNotContain("  • ", output);
+    }
+
     private static HistoricalResultCsvRow Row(
         string date,
         string home,

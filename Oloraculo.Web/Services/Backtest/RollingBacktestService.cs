@@ -197,7 +197,34 @@ public sealed class RollingBacktestService
             : null;
 
     private static BacktestPredictionEvaluation ToBacktestEvaluation(MatchResult target, MatchPrediction prediction) =>
-        new(ToEvaluation(target, prediction), prediction.Degraded);
+        new(ToEvaluation(target, prediction), prediction.Degraded, NormalizeDegradedReasons(prediction));
+
+    private static IReadOnlyList<string> NormalizeDegradedReasons(MatchPrediction prediction)
+    {
+        if (!prediction.Degraded)
+            return [];
+
+        if (prediction.FeaturesMissing.Count > 0)
+            return prediction.FeaturesMissing
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+        // Small normalization from Explanation when FeaturesMissing is empty but Degraded is true.
+        // This handles fallback reasons that predictors express only in Explanation text.
+        var explanation = prediction.Explanation ?? "";
+
+        if (explanation.Contains("Elo", StringComparison.OrdinalIgnoreCase))
+            return ["ratings Elo"];
+
+        if (explanation.Contains("FIFA", StringComparison.OrdinalIgnoreCase))
+            return ["ranking FIFA"];
+
+        if (explanation.Contains("historial reciente", StringComparison.OrdinalIgnoreCase) ||
+            explanation.Contains("recent", StringComparison.OrdinalIgnoreCase))
+            return ["historial reciente"];
+
+        return ["motivo no clasificado"];
+    }
 
     private static PredictionEvaluation ToEvaluation(MatchResult target, MatchPrediction prediction)
     {
@@ -232,6 +259,12 @@ public sealed class RollingBacktestService
                 var signalBacked = group.Count(evaluation => !evaluation.Degraded);
                 var degraded = count - signalBacked;
 
+                var reasonCounts = group
+                    .Where(evaluation => evaluation.Degraded)
+                    .SelectMany(evaluation => evaluation.DegradedReasons)
+                    .GroupBy(reason => reason, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
+
                 return new BacktestModelSummary(
                     group.Key,
                     count,
@@ -241,7 +274,8 @@ public sealed class RollingBacktestService
                     group.Average(evaluation => evaluation.Evaluation.TopPickCorrect ? 1.0 : 0.0))
                 {
                     SignalBackedCount = signalBacked,
-                    DegradedCount = degraded
+                    DegradedCount = degraded,
+                    DegradedReasonCounts = reasonCounts
                 };
             })
             .OrderBy(summary => summary.MeanBrier)
@@ -438,13 +472,19 @@ public sealed record BacktestModelSummary(
     public int SignalBackedCount { get; init; } = Count;
     public int DegradedCount { get; init; }
 
+    public IReadOnlyDictionary<string, int> DegradedReasonCounts { get; init; } =
+        new Dictionary<string, int>();
+
     public double ReadinessPct => Count > 0 ? SignalBackedCount * 100.0 / Count : 100.0;
 
     public bool IsRatingDependent =>
         ModelName is "Elo" or "Ranking FIFA" or "Forma reciente";
 }
 
-internal sealed record BacktestPredictionEvaluation(PredictionEvaluation Evaluation, bool Degraded);
+internal sealed record BacktestPredictionEvaluation(
+    PredictionEvaluation Evaluation,
+    bool Degraded,
+    IReadOnlyList<string> DegradedReasons);
 
 public sealed record BacktestSegmentModelSummary(
     string SegmentName,

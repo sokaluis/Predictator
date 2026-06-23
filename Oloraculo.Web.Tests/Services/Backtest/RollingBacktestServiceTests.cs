@@ -909,12 +909,11 @@ public class RollingBacktestServiceTests
             summary.ModelName == "Oráculo final");
 
         Assert.Equal(1, oracleSummary.Count);
-        // Without any rating snapshots, the oracle ladder's Elo/FIFA/RecentForm/GoalPlusRecentContext
-        // predictors all degrade. The oracle selects the highest non-degraded predictor,
-        // which should be "Modelo de goles (Poisson)".
+        // With this tiny fixture set, ratings, recent form, goal model, and context predictors all degrade.
+        // The oracle selects the highest non-degraded predictor, which is the base model.
         Assert.NotEmpty(oracleSummary.ChosenPredictorCounts);
-        Assert.True(oracleSummary.ChosenPredictorCounts.TryGetValue("Modelo de goles (Poisson)", out var goalCount));
-        Assert.Equal(1, goalCount);
+        Assert.True(oracleSummary.ChosenPredictorCounts.TryGetValue("Modelo base", out var baseCount));
+        Assert.Equal(1, baseCount);
     }
 
     [Fact]
@@ -935,11 +934,12 @@ public class RollingBacktestServiceTests
 
         Assert.Equal(1, oracleSummary.Count);
         Assert.NotEmpty(oracleSummary.ChosenPredictorCounts);
-        // GoalModel (priority 4) is the highest non-degraded predictor
-        // because GoalPlusRecentContextModel (priority 5) degrades without FixtureContext.
+        // RecentForm (priority 3) is the highest non-degraded predictor here:
+        // the target has as-of Elo snapshots plus one prior match per team,
+        // while GoalModel still degrades because it requires deeper goal history.
         Assert.True(oracleSummary.ChosenPredictorCounts.TryGetValue(
-            "Modelo de goles (Poisson)", out var goalCount));
-        Assert.Equal(1, goalCount);
+            "Forma reciente", out var recentFormCount));
+        Assert.Equal(1, recentFormCount);
     }
 
     [Fact]

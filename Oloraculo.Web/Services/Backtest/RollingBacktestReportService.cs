@@ -135,6 +135,8 @@ public sealed class RollingBacktestReportService
             CultureInfo.InvariantCulture,
             $"| {summary.ModelName} | {summary.Count} | {summary.MeanBrier:0.0000} | {summary.MeanLogLoss:0.0000} | {summary.MeanRps:0.0000} | {summary.TopPickAccuracy:P1} |")));
 
+        AddOracleSelectorBreakdown(lines, report.Summaries);
+
         if (report.SegmentSummaries.Count > 0)
         {
             lines.Add("");
@@ -197,6 +199,31 @@ public sealed class RollingBacktestReportService
 
         if (!coverage.EloEnabled && !coverage.FifaEnabled)
             lines.Add("Limitations: Elo, FIFA ranking, and RecentForm are intentionally excluded until historical as-of snapshots exist.");
+    }
+
+    private static void AddOracleSelectorBreakdown(
+        List<string> lines,
+        IReadOnlyList<BacktestModelSummary> summaries)
+    {
+        var oracle = summaries.FirstOrDefault(summary =>
+            string.Equals(summary.ModelName, "Oráculo final", StringComparison.Ordinal));
+
+        if (oracle is null || oracle.ChosenPredictorCounts.Count == 0)
+            return;
+
+        lines.Add("");
+        lines.Add("## Oráculo final — selector breakdown");
+        lines.Add("Backtest note: this measures the final selector with historical match/rating context only; fixture-context signals are not replayed here, so `Goles + contexto reciente` may degrade more often than at runtime.");
+        lines.Add("");
+        lines.Add("| Chosen predictor | Count |");
+        lines.Add("| --- | ---: |");
+
+        foreach (var (predictor, count) in oracle.ChosenPredictorCounts
+            .OrderByDescending(kv => kv.Value)
+            .ThenBy(kv => kv.Key, StringComparer.Ordinal))
+        {
+            lines.Add($"| {predictor} | {count} |");
+        }
     }
 
     private static void AddReadinessLines(

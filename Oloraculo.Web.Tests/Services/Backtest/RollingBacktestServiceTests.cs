@@ -338,7 +338,7 @@ public class RollingBacktestServiceTests
 
         var comparison = new RollingBacktestService().Compare(results, minimumPriorMatchesPerTeam: 1);
 
-        Assert.Equal(["Modelo base", "Modelo de goles (Poisson)"], comparison.Evaluations
+        Assert.Equal(["Modelo base", "Modelo de goles (Poisson)", "Oráculo final"], comparison.Evaluations
             .Select(evaluation => evaluation.ModelName)
             .OrderBy(modelName => modelName, StringComparer.Ordinal));
         Assert.All(comparison.Evaluations, evaluation => Assert.Equal("backtest:target", evaluation.FixtureId));
@@ -356,9 +356,13 @@ public class RollingBacktestServiceTests
 
         var comparison = new RollingBacktestService().Compare(results, minimumPriorMatchesPerTeam: 1);
 
-        Assert.Equal(["Modelo base", "Modelo de goles (Poisson)"], comparison.Evaluations
+        // Base, Poisson, and Oráculo final are always included.
+        // Elo, RecentForm, and FIFA are excluded without as-of snapshots.
+        Assert.Equal(["Modelo base", "Modelo de goles (Poisson)", "Oráculo final"], comparison.Evaluations
             .Select(evaluation => evaluation.ModelName)
             .OrderBy(modelName => modelName, StringComparer.Ordinal));
+        Assert.DoesNotContain(comparison.Evaluations, evaluation =>
+            evaluation.ModelName is "Elo" or "Ranking FIFA" or "Forma reciente");
     }
 
     [Fact]
@@ -386,6 +390,7 @@ public class RollingBacktestServiceTests
             "Forma reciente",
             "Modelo base",
             "Modelo de goles (Poisson)",
+            "Oráculo final",
             "Ranking FIFA"
         ], comparison.Evaluations
             .Select(evaluation => evaluation.ModelName)
@@ -444,7 +449,7 @@ public class RollingBacktestServiceTests
 
         var comparison = new RollingBacktestService(provider).Compare(results, minimumPriorMatchesPerTeam: 1);
 
-        Assert.Equal(["Modelo base", "Modelo de goles (Poisson)"], comparison.Evaluations
+        Assert.Equal(["Modelo base", "Modelo de goles (Poisson)", "Oráculo final"], comparison.Evaluations
             .Select(evaluation => evaluation.ModelName)
             .OrderBy(modelName => modelName, StringComparer.Ordinal));
     }
@@ -886,6 +891,77 @@ public class RollingBacktestServiceTests
         var summary = Assert.Single(comparison.Summaries);
         Assert.Equal(1, summary.DegradedCount);
         Assert.Contains(new KeyValuePair<string, int>("ratings Elo", 1), summary.DegradedReasonCounts);
+    }
+
+    [Fact]
+    public void Compare_DefaultStrategiesIncludeOracleFinalWithChosenPredictorCounts()
+    {
+        var results = new[]
+        {
+            Result("first", "c", "a", "2024-01-01", 1, 1),
+            Result("second", "b", "c", "2024-01-02", 2, 0),
+            Result("target", "a", "b", "2024-01-03", 1, 0)
+        };
+
+        var comparison = new RollingBacktestService().Compare(results, minimumPriorMatchesPerTeam: 1);
+
+        var oracleSummary = comparison.Summaries.Single(summary =>
+            summary.ModelName == "Oráculo final");
+
+        Assert.Equal(1, oracleSummary.Count);
+        // Without any rating snapshots, the oracle ladder's Elo/FIFA/RecentForm/GoalPlusRecentContext
+        // predictors all degrade. The oracle selects the highest non-degraded predictor,
+        // which should be "Modelo de goles (Poisson)".
+        Assert.NotEmpty(oracleSummary.ChosenPredictorCounts);
+        Assert.True(oracleSummary.ChosenPredictorCounts.TryGetValue("Modelo de goles (Poisson)", out var goalCount));
+        Assert.Equal(1, goalCount);
+    }
+
+    [Fact]
+    public void Compare_OracleFinalWithRatingSnapshotsSelectsHighestNonDegraded()
+    {
+        var targetDate = DateTimeOffset.Parse("2024-01-03T00:00:00Z");
+        var provider = new InMemoryBacktestRatingSnapshotProvider(
+        [
+            Rating("a", RatingTypeEnum.Elo, 1500, targetDate.AddDays(-1)),
+            Rating("b", RatingTypeEnum.Elo, 1400, targetDate.AddDays(-1))
+        ]);
+        var results = RatingGatedResults();
+
+        var comparison = new RollingBacktestService(provider).Compare(results, minimumPriorMatchesPerTeam: 1);
+
+        var oracleSummary = comparison.Summaries.Single(summary =>
+            summary.ModelName == "Oráculo final");
+
+        Assert.Equal(1, oracleSummary.Count);
+        Assert.NotEmpty(oracleSummary.ChosenPredictorCounts);
+        // GoalModel (priority 4) is the highest non-degraded predictor
+        // because GoalPlusRecentContextModel (priority 5) degrades without FixtureContext.
+        Assert.True(oracleSummary.ChosenPredictorCounts.TryGetValue(
+            "Modelo de goles (Poisson)", out var goalCount));
+        Assert.Equal(1, goalCount);
+    }
+
+    [Fact]
+    public void OracleFinalComparisonStrategy_ProducesOracleFinalAsPredictorName()
+    {
+        var results = new[]
+        {
+            Result("first", "c", "a", "2024-01-01", 1, 1),
+            Result("second", "b", "c", "2024-01-02", 2, 0),
+            Result("target", "a", "b", "2024-01-03", 1, 0)
+        };
+
+        var strategy = RollingBacktestService.OracleFinalComparisonStrategy();
+        var points = new RollingBacktestService().BuildPredictionPoints(
+            results,
+            strategy,
+            minimumPriorMatchesPerTeam: 1);
+
+        var point = Assert.Single(points);
+        Assert.Equal("Oráculo final", point.Prediction.PredictorName);
+        Assert.NotNull(point.Prediction.Outcome);
+        Assert.True(point.Prediction.Outcome.HomeWin + point.Prediction.Outcome.Draw + point.Prediction.Outcome.AwayWin > 0.999);
     }
 
     private static MatchResult Result(

@@ -324,6 +324,34 @@ public sealed class RollingBacktestService
                     string.Equals(evaluation.Evaluation.ModelName, "Oráculo final", StringComparison.Ordinal) &&
                     !evaluation.RankingBiasApplied);
 
+                BacktestBiasGroupSummary? rankingBiasAppliedSummary = null;
+                BacktestBiasGroupSummary? rankingBiasNotAppliedSummary = null;
+
+                if (string.Equals(group.Key, "Oráculo final", StringComparison.Ordinal))
+                {
+                    var appliedEvals = group.Where(e => e.RankingBiasApplied).ToList();
+                    if (appliedEvals.Count > 0)
+                    {
+                        rankingBiasAppliedSummary = new BacktestBiasGroupSummary(
+                            appliedEvals.Count,
+                            appliedEvals.Average(e => e.Evaluation.BrierScore),
+                            appliedEvals.Average(e => e.Evaluation.LogLoss),
+                            appliedEvals.Average(e => e.Evaluation.RankedProbabilityScore),
+                            appliedEvals.Average(e => e.Evaluation.TopPickCorrect ? 1.0 : 0.0));
+                    }
+
+                    var notAppliedEvals = group.Where(e => !e.RankingBiasApplied).ToList();
+                    if (notAppliedEvals.Count > 0)
+                    {
+                        rankingBiasNotAppliedSummary = new BacktestBiasGroupSummary(
+                            notAppliedEvals.Count,
+                            notAppliedEvals.Average(e => e.Evaluation.BrierScore),
+                            notAppliedEvals.Average(e => e.Evaluation.LogLoss),
+                            notAppliedEvals.Average(e => e.Evaluation.RankedProbabilityScore),
+                            notAppliedEvals.Average(e => e.Evaluation.TopPickCorrect ? 1.0 : 0.0));
+                    }
+                }
+
                 return new BacktestModelSummary(
                     group.Key,
                     count,
@@ -337,7 +365,9 @@ public sealed class RollingBacktestService
                     DegradedReasonCounts = reasonCounts,
                     ChosenPredictorCounts = chosenPredictorCounts,
                     RankingBiasAppliedCount = biasAppliedCount,
-                    RankingBiasNotAppliedCount = biasNotAppliedCount
+                    RankingBiasNotAppliedCount = biasNotAppliedCount,
+                    RankingBiasAppliedSummary = rankingBiasAppliedSummary,
+                    RankingBiasNotAppliedSummary = rankingBiasNotAppliedSummary
                 };
             })
             .OrderBy(summary => summary.MeanBrier)
@@ -546,6 +576,9 @@ public sealed record BacktestModelSummary(
     public int RankingBiasAppliedCount { get; init; }
     public int RankingBiasNotAppliedCount { get; init; }
 
+    public BacktestBiasGroupSummary? RankingBiasAppliedSummary { get; init; }
+    public BacktestBiasGroupSummary? RankingBiasNotAppliedSummary { get; init; }
+
     public double ReadinessPct => Count > 0 ? SignalBackedCount * 100.0 / Count : 100.0;
 
     public bool IsRatingDependent =>
@@ -564,3 +597,10 @@ internal sealed record BacktestPredictionEvaluation(
 public sealed record BacktestSegmentModelSummary(
     string SegmentName,
     BacktestModelSummary Summary);
+
+public sealed record BacktestBiasGroupSummary(
+    int Count,
+    double MeanBrier,
+    double MeanLogLoss,
+    double MeanRps,
+    double TopPickAccuracy);

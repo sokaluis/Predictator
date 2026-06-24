@@ -139,6 +139,7 @@ public sealed class RollingBacktestReportService
         AddOracleSegmentBreakdown(lines, report.SegmentSummaries);
         AddOracleRankingBiasBreakdown(lines, report.Summaries);
         AddOracleRankingBiasBySegment(lines, report.SegmentSummaries);
+        AddOracleRankingBiasSubgroupMetrics(lines, report.Summaries);
 
         if (report.SegmentSummaries.Count > 0)
         {
@@ -315,6 +316,40 @@ public sealed class RollingBacktestReportService
             var pct = total > 0 ? (applied * 100.0 / total).ToString("F1", CultureInfo.InvariantCulture) : "0.0";
 
             lines.Add($"| {segment.SegmentName} | {applied} | {notApplied} | {pct}% |");
+        }
+    }
+
+    private static void AddOracleRankingBiasSubgroupMetrics(
+        List<string> lines,
+        IReadOnlyList<BacktestModelSummary> summaries)
+    {
+        var oracle = summaries.FirstOrDefault(summary =>
+            string.Equals(summary.ModelName, "Oráculo final", StringComparison.Ordinal));
+
+        if (oracle?.RankingBiasAppliedSummary is null && oracle?.RankingBiasNotAppliedSummary is null)
+            return;
+
+        lines.Add("");
+        lines.Add("## Oráculo final — ranking bias subgroup metrics");
+        lines.Add("Compares separate backtest subsets where the Elo/FIFA ranking bias calibration was applied vs not applied; this is not a same-fixture counterfactual.");
+        lines.Add("");
+        lines.Add("| Bias applied? | Count | MeanBrier | MeanLogLoss | MeanRPS | TopPickAccuracy |");
+        lines.Add("| --- | ---: | ---: | ---: | ---: | ---: |");
+
+        if (oracle.RankingBiasAppliedSummary is not null)
+        {
+            var s = oracle.RankingBiasAppliedSummary;
+            lines.Add(string.Create(
+                CultureInfo.InvariantCulture,
+                $"| Yes | {s.Count} | {s.MeanBrier:0.0000} | {s.MeanLogLoss:0.0000} | {s.MeanRps:0.0000} | {s.TopPickAccuracy:P1} |"));
+        }
+
+        if (oracle.RankingBiasNotAppliedSummary is not null)
+        {
+            var s = oracle.RankingBiasNotAppliedSummary;
+            lines.Add(string.Create(
+                CultureInfo.InvariantCulture,
+                $"| No | {s.Count} | {s.MeanBrier:0.0000} | {s.MeanLogLoss:0.0000} | {s.MeanRps:0.0000} | {s.TopPickAccuracy:P1} |"));
         }
     }
 

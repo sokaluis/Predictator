@@ -101,4 +101,100 @@ public class PredictionServiceTests : TestFixtures
         });
     }
 
+    [Fact]
+    public async Task PredictionService_ExposesBaselineVsContextAdjustedPrediction()
+    {
+        await using var db = await NewDb();
+        SeedPredictionData(db, includeFixtureContext: true, context =>
+        {
+            context.UnavailableHomePlayers = 2;
+            context.UnavailableHomeAttackImpact = 0.10;
+            context.UnavailableAwayDefenseImpact = 0.05;
+        });
+        var service = new PredictionService(db, SimulationOptions(1, 1));
+
+        var result = await service.PredictFixtureAsync("f1");
+
+        Assert.NotNull(result);
+        var comparison = Assert.IsType<PredictionAdjustmentComparison>(result!.AdjustmentComparison);
+        Assert.Equal("Oráculo final", comparison.BaselinePrediction.PredictorName);
+        Assert.Equal("Modelo de goles (Poisson)", comparison.BaselineMethodName);
+        Assert.Equal("Goles + contexto reciente", comparison.AdjustedMethodName);
+        Assert.Equal(result.BestPrediction.PredictorName, comparison.AdjustedPrediction.PredictorName);
+        Assert.True(comparison.HasExpectedGoalsDelta);
+        Assert.Contains(comparison.Signals, signal =>
+            signal.Name == "Disponibilidad de jugadores" && signal.Applied && signal.Modeled);
+    }
+
+    [Fact]
+    public async Task PredictionService_DoesNotExposeComparisonWhenFixtureContextIsMissing()
+    {
+        await using var db = await NewDb();
+        SeedPredictionData(db, includeFixtureContext: false);
+        var service = new PredictionService(db, SimulationOptions(1, 1));
+
+        var result = await service.PredictFixtureAsync("f1");
+
+        Assert.NotNull(result);
+        Assert.Null(result!.AdjustmentComparison);
+    }
+
+    [Fact]
+    public async Task PredictionService_ReportsLineupsAndOddsAsAvailableButNotModeled()
+    {
+        await using var db = await NewDb();
+        SeedPredictionData(db, includeFixtureContext: true, context =>
+        {
+            context.HasLineups = true;
+            context.HasOdds = true;
+        });
+        var service = new PredictionService(db, SimulationOptions(1, 1));
+
+        var result = await service.PredictFixtureAsync("f1");
+
+        Assert.NotNull(result);
+        var comparison = Assert.IsType<PredictionAdjustmentComparison>(result!.AdjustmentComparison);
+        Assert.False(comparison.HasExpectedGoalsDelta);
+        Assert.False(comparison.PickChanged);
+
+        var lineups = comparison.Signals.Single(signal => signal.Name == "Alineaciones");
+        Assert.True(lineups.Available);
+        Assert.False(lineups.Applied);
+        Assert.False(lineups.Modeled);
+
+        var odds = comparison.Signals.Single(signal => signal.Name == "Cuotas (odds)");
+        Assert.True(odds.Available);
+        Assert.False(odds.Applied);
+        Assert.False(odds.Modeled);
+    }
+
+    private static void SeedPredictionData(
+        OloraculoDbContext db,
+        bool includeFixtureContext,
+        Action<FixtureContext>? configureContext = null)
+    {
+        db.Teams.AddRange(
+            new Team { Id = "a", Name = "Alpha" },
+            new Team { Id = "b", Name = "Beta" });
+        db.Fixtures.Add(new Fixture { Id = "f1", HomeTeamId = "a", AwayTeamId = "b", NeutralVenue = true });
+        db.Results.AddRange(
+            Result("a", "b", 2, 0),
+            Result("b", "a", 1, 1),
+            Result("a", "b", 3, 1),
+            Result("b", "a", 0, 2));
+
+        if (includeFixtureContext)
+        {
+            var fixtureContext = new FixtureContext
+            {
+                FixtureId = "f1",
+                UpdatedAt = DateTimeOffset.UtcNow
+            };
+            configureContext?.Invoke(fixtureContext);
+            db.FixtureContexts.Add(fixtureContext);
+        }
+
+        db.SaveChanges();
+    }
+
 }

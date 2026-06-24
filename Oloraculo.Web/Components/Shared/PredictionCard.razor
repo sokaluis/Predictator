@@ -68,6 +68,47 @@
             </ul>
         }
 
+        @if (AdjustmentComparison is not null)
+        {
+            <MudText Typo="Typo.caption" Color="Color.Secondary" Class="section-label">Contexto externo/API Pro vs base</MudText>
+            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                Método base: @AdjustmentComparison.BaselineMethodName · método con contexto: @AdjustmentComparison.AdjustedMethodName
+            </MudText>
+            <MudText Typo="Typo.caption">
+                Base @PickLabel(AdjustmentComparison.BaselinePick) · Ajustado @PickLabel(AdjustmentComparison.AdjustedPick)
+                @if (AdjustmentComparison.PickChanged)
+                {
+                    <span> · cambió el pick</span>
+                }
+                else
+                {
+                    <span> · mismo pick</span>
+                }
+            </MudText>
+            @if (AdjustmentComparison.HomeExpectedGoalsDelta.HasValue && AdjustmentComparison.AwayExpectedGoalsDelta.HasValue)
+            {
+                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                    Δ xG <TeamLabel TeamId="@Prediction.HomeTeamId" Name="@HomeLabel" Compact="true" /> @Signed(AdjustmentComparison.HomeExpectedGoalsDelta.Value)
+                    · <TeamLabel TeamId="@Prediction.AwayTeamId" Name="@AwayLabel" Compact="true" /> @Signed(AdjustmentComparison.AwayExpectedGoalsDelta.Value)
+                </MudText>
+            }
+            @if (AdjustmentComparison.Signals.Count > 0)
+            {
+                <ul class="driver-list mt-1">
+                    @foreach (var signal in AdjustmentComparison.Signals)
+                    {
+                        <li>
+                            <strong>@signal.Name</strong>: @signal.Detail
+                            @if (!signal.Modeled)
+                            {
+                                <span>(disponible, no modelado)</span>
+                            }
+                        </li>
+                    }
+                </ul>
+            }
+        }
+
         @if (Criteria is not null)
         {
             <MudText Typo="Typo.caption" Color="Color.Secondary" Class="section-label mt-3">Señales</MudText>
@@ -102,4 +143,15 @@
     [Parameter] public string AwayLabel { get; set; } = "Visitante";
     [Parameter] public bool ShowDetails { get; set; } = true;
     [Parameter] public PredictionCriteria? Criteria { get; set; }
+    [Parameter] public PredictionAdjustmentComparison? AdjustmentComparison { get; set; }
+
+    private static string Signed(double value) => value >= 0 ? $"+{value:0.00}" : value.ToString("0.00");
+
+    private static string PickLabel(string pick) => pick switch
+    {
+        "Home" => "local",
+        "Away" => "visitante",
+        "Draw" => "empate",
+        _ => pick
+    };
 }

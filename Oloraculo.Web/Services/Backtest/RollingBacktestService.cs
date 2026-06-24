@@ -352,6 +352,25 @@ public sealed class RollingBacktestService
                     }
                 }
 
+                var chosenPredictorSubgroupMetrics =
+                    new Dictionary<string, BacktestBiasGroupSummary>(StringComparer.Ordinal);
+
+                if (string.Equals(group.Key, "Oráculo final", StringComparison.Ordinal))
+                {
+                    foreach (var predictorGroup in group
+                        .Where(e => e.ChosenPredictorName is not null)
+                        .GroupBy(e => e.ChosenPredictorName!, StringComparer.Ordinal))
+                    {
+                        var evals = predictorGroup.ToList();
+                        chosenPredictorSubgroupMetrics[predictorGroup.Key] = new BacktestBiasGroupSummary(
+                            evals.Count,
+                            evals.Average(e => e.Evaluation.BrierScore),
+                            evals.Average(e => e.Evaluation.LogLoss),
+                            evals.Average(e => e.Evaluation.RankedProbabilityScore),
+                            evals.Average(e => e.Evaluation.TopPickCorrect ? 1.0 : 0.0));
+                    }
+                }
+
                 return new BacktestModelSummary(
                     group.Key,
                     count,
@@ -367,7 +386,8 @@ public sealed class RollingBacktestService
                     RankingBiasAppliedCount = biasAppliedCount,
                     RankingBiasNotAppliedCount = biasNotAppliedCount,
                     RankingBiasAppliedSummary = rankingBiasAppliedSummary,
-                    RankingBiasNotAppliedSummary = rankingBiasNotAppliedSummary
+                    RankingBiasNotAppliedSummary = rankingBiasNotAppliedSummary,
+                    ChosenPredictorSubgroupMetrics = chosenPredictorSubgroupMetrics
                 };
             })
             .OrderBy(summary => summary.MeanBrier)
@@ -578,6 +598,9 @@ public sealed record BacktestModelSummary(
 
     public BacktestBiasGroupSummary? RankingBiasAppliedSummary { get; init; }
     public BacktestBiasGroupSummary? RankingBiasNotAppliedSummary { get; init; }
+
+    public IReadOnlyDictionary<string, BacktestBiasGroupSummary> ChosenPredictorSubgroupMetrics { get; init; } =
+        new Dictionary<string, BacktestBiasGroupSummary>();
 
     public double ReadinessPct => Count > 0 ? SignalBackedCount * 100.0 / Count : 100.0;
 

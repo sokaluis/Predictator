@@ -516,4 +516,143 @@ public class EvaluationServiceTests : TestFixtures
         Source = "manual"
     };
 
+    // ----- Paired comparison tests -----
+
+    [Fact]
+    public async Task PairedComparison_ReturnsNullWhenNoPairsExist()
+    {
+        await using var db = await NewDb();
+        db.Evaluations.AddRange(
+            Evaluation("f1", "Oráculo final", DateTimeOffset.Parse("2026-01-01T00:00:00Z")),
+            Evaluation("f1", MatchPrediction.ContextAdjustedPredictionIdentity, DateTimeOffset.Parse("2026-01-01T00:01:00Z")));
+        await db.SaveChangesAsync();
+
+        var result = await new EvaluationService(db).PairedOracleContextComparisonAsync();
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task PairedComparison_IgnoresUnpairedRows()
+    {
+        await using var db = await NewDb();
+        var pairedAt = DateTimeOffset.Parse("2026-01-01T00:00:00Z");
+        var unpairedAt = DateTimeOffset.Parse("2026-01-01T00:01:00Z");
+
+        // One pair at pairedAt
+        db.Evaluations.AddRange(
+            PairedEvaluation("f1", "Oráculo final", pairedAt, brier: 0.2, rps: 0.3, logLoss: 0.4, topPick: true),
+            PairedEvaluation("f1", MatchPrediction.ContextAdjustedPredictionIdentity, pairedAt, brier: 0.1, rps: 0.2, logLoss: 0.3, topPick: false));
+        // Unpaired extra baseline for f1 at different time
+        db.Evaluations.Add(PairedEvaluation("f1", "Oráculo final", unpairedAt, brier: 0.99, rps: 0.99, logLoss: 0.99, topPick: false));
+        // Unpaired extra context for another fixture at the paired time
+        db.Evaluations.Add(PairedEvaluation("f2", MatchPrediction.ContextAdjustedPredictionIdentity, pairedAt, brier: 0.99, rps: 0.99, logLoss: 0.99, topPick: true));
+        await db.SaveChangesAsync();
+
+        var result = await new EvaluationService(db).PairedOracleContextComparisonAsync();
+
+        Assert.NotNull(result);
+        Assert.Equal(1, result.PairCount);
+        Assert.Equal(0.2, result.BaselineMeanBrier, 3);
+        Assert.Equal(0.1, result.ContextMeanBrier, 3);
+        Assert.Equal(-0.1, result.DeltaBrier, 3);
+        Assert.Equal(0.3, result.BaselineMeanRps, 3);
+        Assert.Equal(0.2, result.ContextMeanRps, 3);
+        Assert.Equal(-0.1, result.DeltaRps, 3);
+        Assert.Equal(0.4, result.BaselineMeanLogLoss, 3);
+        Assert.Equal(0.3, result.ContextMeanLogLoss, 3);
+        Assert.Equal(-0.1, result.DeltaLogLoss, 3);
+        Assert.Equal(1.0, result.BaselineTopPickAccuracy, 3);
+        Assert.Equal(0.0, result.ContextTopPickAccuracy, 3);
+        Assert.Equal(-1.0, result.DeltaTopPickAccuracy, 3);
+    }
+
+    [Fact]
+    public async Task PairedComparison_UsesLatestEvaluationWhenDuplicateKeysExist()
+    {
+        await using var db = await NewDb();
+        var pairedAt = DateTimeOffset.Parse("2026-01-01T00:00:00Z");
+
+        db.Evaluations.AddRange(
+            PairedEvaluation("f1", "Oráculo final", pairedAt, brier: 0.9, rps: 0.9, logLoss: 0.9, topPick: false),
+            PairedEvaluation("f1", MatchPrediction.ContextAdjustedPredictionIdentity, pairedAt, brier: 0.8, rps: 0.8, logLoss: 0.8, topPick: false),
+            PairedEvaluation("f1", "Oráculo final", pairedAt, brier: 0.2, rps: 0.3, logLoss: 0.4, topPick: true),
+            PairedEvaluation("f1", MatchPrediction.ContextAdjustedPredictionIdentity, pairedAt, brier: 0.1, rps: 0.2, logLoss: 0.3, topPick: true));
+        await db.SaveChangesAsync();
+
+        var result = await new EvaluationService(db).PairedOracleContextComparisonAsync();
+
+        Assert.NotNull(result);
+        Assert.Equal(1, result.PairCount);
+        Assert.Equal(0.2, result.BaselineMeanBrier, 3);
+        Assert.Equal(0.1, result.ContextMeanBrier, 3);
+        Assert.Equal(-0.1, result.DeltaBrier, 3);
+        Assert.Equal(1.0, result.BaselineTopPickAccuracy, 3);
+        Assert.Equal(1.0, result.ContextTopPickAccuracy, 3);
+    }
+
+    [Fact]
+    public async Task PairedComparison_ComputesMetricsFromPairedRowsOnly()
+    {
+        await using var db = await NewDb();
+        var t1 = DateTimeOffset.Parse("2026-01-01T00:00:00Z");
+        var t2 = DateTimeOffset.Parse("2026-01-02T00:00:00Z");
+
+        // Pair 1: f1 at t1
+        db.Evaluations.AddRange(
+            PairedEvaluation("f1", "Oráculo final", t1, brier: 0.15, rps: 0.20, logLoss: 0.30, topPick: true),
+            PairedEvaluation("f1", MatchPrediction.ContextAdjustedPredictionIdentity, t1, brier: 0.10, rps: 0.15, logLoss: 0.25, topPick: true));
+        // Pair 2: f2 at t2
+        db.Evaluations.AddRange(
+            PairedEvaluation("f2", "Oráculo final", t2, brier: 0.25, rps: 0.30, logLoss: 0.40, topPick: false),
+            PairedEvaluation("f2", MatchPrediction.ContextAdjustedPredictionIdentity, t2, brier: 0.20, rps: 0.28, logLoss: 0.35, topPick: true));
+        // Unpaired: f3 context-only
+        db.Evaluations.Add(PairedEvaluation("f3", MatchPrediction.ContextAdjustedPredictionIdentity, t1, brier: 0.99, rps: 0.99, logLoss: 0.99, topPick: false));
+        await db.SaveChangesAsync();
+
+        var result = await new EvaluationService(db).PairedOracleContextComparisonAsync();
+
+        Assert.NotNull(result);
+        Assert.Equal(2, result.PairCount);
+
+        // Baseline means
+        Assert.Equal(0.20, result.BaselineMeanBrier, 3);    // (0.15+0.25)/2
+        Assert.Equal(0.25, result.BaselineMeanRps, 3);      // (0.20+0.30)/2
+        Assert.Equal(0.35, result.BaselineMeanLogLoss, 3);  // (0.30+0.40)/2
+        Assert.Equal(0.5, result.BaselineTopPickAccuracy, 3); // (1+0)/2
+
+        // Context means
+        Assert.Equal(0.15, result.ContextMeanBrier, 3);     // (0.10+0.20)/2
+        Assert.Equal(0.215, result.ContextMeanRps, 3);      // (0.15+0.28)/2
+        Assert.Equal(0.30, result.ContextMeanLogLoss, 3);   // (0.25+0.35)/2
+        Assert.Equal(1.0, result.ContextTopPickAccuracy, 3); // (1+1)/2
+
+        // Deltas (context - baseline)
+        Assert.Equal(-0.05, result.DeltaBrier, 3);
+        Assert.Equal(-0.035, result.DeltaRps, 3);
+        Assert.Equal(-0.05, result.DeltaLogLoss, 3);
+        Assert.Equal(0.5, result.DeltaTopPickAccuracy, 3);
+    }
+
+    private static PredictionEvaluation PairedEvaluation(
+        string fixtureId, string modelName, DateTimeOffset predictedAt,
+        double brier = 0.0, double rps = 0.0, double logLoss = 0.0, bool topPick = true) => new()
+    {
+        ModelName = modelName,
+        FixtureId = fixtureId,
+        HomeTeamId = "a",
+        AwayTeamId = "b",
+        HomeGoals = 2,
+        AwayGoals = 1,
+        HomeWin = .6,
+        Draw = .2,
+        AwayWin = .2,
+        Actual = "Home",
+        BrierScore = brier,
+        RankedProbabilityScore = rps,
+        LogLoss = logLoss,
+        TopPickCorrect = topPick,
+        PredictedAt = predictedAt
+    };
+
 }

@@ -26,6 +26,48 @@
     }
     else
     {
+        @if (_paired is not null)
+        {
+            var pairCount = _paired.PairCount;
+            var metrics = new[]
+            {
+                new { Name = "Brier", LowerBetter = true, Base = _paired.BaselineMeanBrier, Context = _paired.ContextMeanBrier, Delta = _paired.DeltaBrier },
+                new { Name = "RPS", LowerBetter = true, Base = _paired.BaselineMeanRps, Context = _paired.ContextMeanRps, Delta = _paired.DeltaRps },
+                new { Name = "Log loss", LowerBetter = true, Base = _paired.BaselineMeanLogLoss, Context = _paired.ContextMeanLogLoss, Delta = _paired.DeltaLogLoss },
+                new { Name = "Favorito", LowerBetter = false, Base = _paired.BaselineTopPickAccuracy, Context = _paired.ContextTopPickAccuracy, Delta = _paired.DeltaTopPickAccuracy },
+            };
+            <MudPaper Class="surface-card paired-compare" Elevation="0">
+                <MudText Typo="Typo.h6">Comparación pareada: base vs contexto API</MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">
+                    Compara el mismo partido y momento de predicción (@pairCount @(pairCount == 1 ? "par" : "pares")).
+                    Cada par comparte el mismo fixture evaluado bajo ambas estrategias,
+                    lo que evita comparar poblaciones distintas.
+                </MudText>
+                <MudTable Items="metrics" Dense="true" Hover="true" Elevation="0" Class="dense-table">
+                    <HeaderContent>
+                        <MudTh>Métrica</MudTh>
+                        <MudTh Class="num">Oráculo final</MudTh>
+                        <MudTh Class="num">+ contexto API</MudTh>
+                        <MudTh Class="num">Δ</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="Métrica">@context.Name</MudTd>
+                        <MudTd DataLabel="Base" Class="num">@MetricValue(context.Name, context.Base)</MudTd>
+                        <MudTd DataLabel="Contexto" Class="num">@MetricValue(context.Name, context.Context)</MudTd>
+                        <MudTd DataLabel="Δ" Class="num">
+                            <span class="@DeltaClass(context.LowerBetter, context.Delta)">@DeltaValue(context.Name, context.Delta)</span>
+                        </MudTd>
+                    </RowTemplate>
+                </MudTable>
+            </MudPaper>
+        }
+        else if (_performance.Any(r => r.ModelName == MatchPrediction.ContextAdjustedPredictionIdentity))
+        {
+            <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">
+                No hay pares para comparación pareada (se necesitan evaluaciones de ambos modelos para el mismo partido y momento).
+            </MudAlert>
+        }
+
         <MudPaper Class="surface-card" Elevation="0">
             <MudText Typo="Typo.h6">Puntajes por modelo</MudText>
             <MudTable Items="_performance" Dense="true" Hover="true" Elevation="0" Class="dense-table">
@@ -93,6 +135,7 @@
     private IReadOnlyList<ModelPerformanceRow> _performance = [];
     private IReadOnlyList<PredictionEvaluation> _best = [];
     private IReadOnlyList<PredictionEvaluation> _worst = [];
+    private PairedComparisonRow? _paired;
     private Dictionary<string, string> _names = [];
     private bool _loaded;
 
@@ -102,8 +145,32 @@
         _performance = await Evaluation.PerformanceAsync();
         _best = await Evaluation.BestCallsAsync();
         _worst = await Evaluation.OverconfidentFailuresAsync();
+        _paired = await Evaluation.PairedOracleContextComparisonAsync();
         _loaded = true;
     }
 
     private string Name(string id) => _names.TryGetValue(id, out var name) ? name : id;
+
+    private static string MetricValue(string metricName, double value)
+    {
+        if (metricName is "Favorito")
+            return value.ToString("P0");
+        return value.ToString("0.000");
+    }
+
+    private static string DeltaValue(string metricName, double delta)
+    {
+        if (metricName is "Favorito")
+            return delta >= 0 ? $"+{delta:P0}" : delta.ToString("P0");
+        return delta >= 0 ? $"+{delta:0.000}" : delta.ToString("0.000");
+    }
+
+    private static string DeltaClass(bool lowerBetter, double delta)
+    {
+        if (Math.Abs(delta) < 1e-10)
+            return "delta-neutral";
+        if (lowerBetter)
+            return delta < 0 ? "delta-good" : "delta-bad";
+        return delta > 0 ? "delta-good" : "delta-bad";
+    }
 }

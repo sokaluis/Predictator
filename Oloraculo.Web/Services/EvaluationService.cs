@@ -184,6 +184,78 @@ namespace Oloraculo.Web.Services
                 .ToList();
         }
 
+        public async Task<PairedComparisonRow?> PairedOracleContextComparisonAsync(CancellationToken ct = default)
+        {
+            var allRows = await _db.Evaluations.AsNoTracking().ToListAsync(ct);
+
+            const string baselineKey = "Oráculo final";
+            var contextKey = MatchPrediction.ContextAdjustedPredictionIdentity;
+
+            var baselineDict = allRows
+                .Where(e => e.ModelName == baselineKey)
+                .GroupBy(e => (e.FixtureId, e.PredictedAt))
+                .ToDictionary(g => g.Key, g => g.OrderByDescending(e => e.Id).First());
+
+            var contextDict = allRows
+                .Where(e => e.ModelName == contextKey)
+                .GroupBy(e => (e.FixtureId, e.PredictedAt))
+                .ToDictionary(g => g.Key, g => g.OrderByDescending(e => e.Id).First());
+
+            var commonKeys = baselineDict.Keys.Intersect(contextDict.Keys).ToList();
+            if (commonKeys.Count == 0)
+                return null;
+
+            var baselineBrier = 0.0;
+            var baselineRps = 0.0;
+            var baselineLogLoss = 0.0;
+            var baselineTopPick = 0.0;
+            var contextBrier = 0.0;
+            var contextRps = 0.0;
+            var contextLogLoss = 0.0;
+            var contextTopPick = 0.0;
+
+            foreach (var key in commonKeys)
+            {
+                var b = baselineDict[key];
+                var c = contextDict[key];
+                baselineBrier += b.BrierScore;
+                baselineRps += b.RankedProbabilityScore;
+                baselineLogLoss += b.LogLoss;
+                baselineTopPick += b.TopPickCorrect ? 1.0 : 0.0;
+                contextBrier += c.BrierScore;
+                contextRps += c.RankedProbabilityScore;
+                contextLogLoss += c.LogLoss;
+                contextTopPick += c.TopPickCorrect ? 1.0 : 0.0;
+            }
+
+            var n = commonKeys.Count;
+            baselineBrier /= n;
+            baselineRps /= n;
+            baselineLogLoss /= n;
+            baselineTopPick /= n;
+            contextBrier /= n;
+            contextRps /= n;
+            contextLogLoss /= n;
+            contextTopPick /= n;
+
+            return new PairedComparisonRow
+            {
+                PairCount = n,
+                BaselineMeanBrier = baselineBrier,
+                BaselineMeanRps = baselineRps,
+                BaselineMeanLogLoss = baselineLogLoss,
+                BaselineTopPickAccuracy = baselineTopPick,
+                ContextMeanBrier = contextBrier,
+                ContextMeanRps = contextRps,
+                ContextMeanLogLoss = contextLogLoss,
+                ContextTopPickAccuracy = contextTopPick,
+                DeltaBrier = contextBrier - baselineBrier,
+                DeltaRps = contextRps - baselineRps,
+                DeltaLogLoss = contextLogLoss - baselineLogLoss,
+                DeltaTopPickAccuracy = contextTopPick - baselineTopPick
+            };
+        }
+
         public async Task<IReadOnlyList<PredictionEvaluation>> BestCallsAsync(int take = 8, CancellationToken ct = default) =>
             await _db.Evaluations.AsNoTracking().OrderBy(e => e.RankedProbabilityScore).Take(take).ToListAsync(ct);
 

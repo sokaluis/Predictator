@@ -414,6 +414,20 @@ body {
     font-variant-numeric: tabular-nums;
 }
 
+.delta-good {
+    color: var(--accent);
+    font-weight: 700;
+}
+
+.delta-bad {
+    color: var(--draw);
+    font-weight: 700;
+}
+
+.delta-neutral {
+    color: var(--muted);
+}
+
 .dense-table {
     overflow-x: auto;
 }

@@ -3,6 +3,7 @@ using Oloraculo.Web.DAL;
 using Oloraculo.Web.Helpers;
 using Oloraculo.Web.Models;
 using Oloraculo.Web.Probability;
+using System.Text.Json;
 
 namespace Oloraculo.Web.Services
 {
@@ -37,7 +38,7 @@ namespace Oloraculo.Web.Services
                 .Where(e => e.FixtureId == fixture.Id)
                 .Select(e => new { e.ModelName, e.PredictedAt })
                 .ToListAsync(ct);
-            var existingKeys = existingEvaluations
+            var seenKeys = existingEvaluations
                 .Select(e => (e.ModelName, e.PredictedAt))
                 .ToHashSet();
 
@@ -48,29 +49,60 @@ namespace Oloraculo.Web.Services
             var added = 0;
             foreach (var snapshot in snapshots)
             {
-                if (existingKeys.Contains((snapshot.ModelName, snapshot.CreatedAt)))
-                    continue;
-
-                var predicted = new OutcomeProbabilities(snapshot.HomeWin!.Value, snapshot.Draw!.Value, snapshot.AwayWin!.Value).Normalize();
-                _db.Evaluations.Add(new PredictionEvaluation
+                // Top-level evaluation from snapshot columns
+                var snapshotKey = (snapshot.ModelName, snapshot.CreatedAt);
+                if (seenKeys.Add(snapshotKey))
                 {
-                    ModelName = snapshot.ModelName,
-                    FixtureId = fixture.Id,
-                    HomeTeamId = fixture.HomeTeamId,
-                    AwayTeamId = fixture.AwayTeamId,
-                    HomeGoals = homeGoals,
-                    AwayGoals = awayGoals,
-                    HomeWin = predicted.HomeWin,
-                    Draw = predicted.Draw,
-                    AwayWin = predicted.AwayWin,
-                    Actual = actual,
-                    BrierScore = ProbabilityHelper.BrierScore(predicted, actual),
-                    RankedProbabilityScore = ProbabilityHelper.RankedProbabilityScore(predicted, actual),
-                    LogLoss = ProbabilityHelper.LogLoss(predicted, actual),
-                    TopPickCorrect = predicted.TopPick == actual,
-                    PredictedAt = snapshot.CreatedAt
-                });
-                added++;
+                    var predicted = new OutcomeProbabilities(snapshot.HomeWin!.Value, snapshot.Draw!.Value, snapshot.AwayWin!.Value).Normalize();
+                    _db.Evaluations.Add(new PredictionEvaluation
+                    {
+                        ModelName = snapshot.ModelName,
+                        FixtureId = fixture.Id,
+                        HomeTeamId = fixture.HomeTeamId,
+                        AwayTeamId = fixture.AwayTeamId,
+                        HomeGoals = homeGoals,
+                        AwayGoals = awayGoals,
+                        HomeWin = predicted.HomeWin,
+                        Draw = predicted.Draw,
+                        AwayWin = predicted.AwayWin,
+                        Actual = actual,
+                        BrierScore = ProbabilityHelper.BrierScore(predicted, actual),
+                        RankedProbabilityScore = ProbabilityHelper.RankedProbabilityScore(predicted, actual),
+                        LogLoss = ProbabilityHelper.LogLoss(predicted, actual),
+                        TopPickCorrect = predicted.TopPick == actual,
+                        PredictedAt = snapshot.CreatedAt
+                    });
+                    added++;
+                }
+
+                // Synthesized baseline evaluation from AdjustmentComparison.BaselinePrediction in payload
+                var baseline = TryExtractBaseline(snapshot.PayloadJson, snapshot.ModelName);
+                if (baseline != null)
+                {
+                    var baselineKey = (baseline.ModelName, snapshot.CreatedAt);
+                    if (seenKeys.Add(baselineKey))
+                    {
+                        _db.Evaluations.Add(new PredictionEvaluation
+                        {
+                            ModelName = baseline.ModelName,
+                            FixtureId = fixture.Id,
+                            HomeTeamId = fixture.HomeTeamId,
+                            AwayTeamId = fixture.AwayTeamId,
+                            HomeGoals = homeGoals,
+                            AwayGoals = awayGoals,
+                            HomeWin = baseline.Probabilities.HomeWin,
+                            Draw = baseline.Probabilities.Draw,
+                            AwayWin = baseline.Probabilities.AwayWin,
+                            Actual = actual,
+                            BrierScore = ProbabilityHelper.BrierScore(baseline.Probabilities, actual),
+                            RankedProbabilityScore = ProbabilityHelper.RankedProbabilityScore(baseline.Probabilities, actual),
+                            LogLoss = ProbabilityHelper.LogLoss(baseline.Probabilities, actual),
+                            TopPickCorrect = baseline.Probabilities.TopPick == actual,
+                            PredictedAt = snapshot.CreatedAt
+                        });
+                        added++;
+                    }
+                }
             }
 
             if (added == 0)
@@ -164,6 +196,66 @@ namespace Oloraculo.Web.Services
 
         public static string OutcomeFromGoals(int homeGoals, int awayGoals) =>
             homeGoals > awayGoals ? "Home" : awayGoals > homeGoals ? "Away" : "Draw";
+
+        // ----- Baseline extraction from persisted AdjustmentComparison -----
+
+        private sealed record BaselineExtraction(string ModelName, OutcomeProbabilities Probabilities);
+
+        private static BaselineExtraction? TryExtractBaseline(string payloadJson, string topLevelModelName)
+        {
+            if (string.IsNullOrWhiteSpace(payloadJson))
+                return null;
+
+            try
+            {
+                using var doc = JsonDocument.Parse(payloadJson);
+                var root = doc.RootElement;
+
+                if (!root.TryGetProperty("AdjustmentComparison", out var adjElement) || adjElement.ValueKind != JsonValueKind.Object)
+                    return null;
+
+                if (!adjElement.TryGetProperty("BaselinePrediction", out var baselineElement) || baselineElement.ValueKind != JsonValueKind.Object)
+                    return null;
+
+                var predictionIdentity = TryGetPropString(baselineElement, "PredictionIdentity");
+                var predictorName = TryGetPropString(baselineElement, "PredictorName");
+                var effectiveModelName = !string.IsNullOrWhiteSpace(predictionIdentity) ? predictionIdentity : predictorName;
+                if (string.IsNullOrWhiteSpace(effectiveModelName))
+                    return null;
+
+                if (string.Equals(effectiveModelName, topLevelModelName, StringComparison.Ordinal))
+                    return null;
+
+                if (!baselineElement.TryGetProperty("Outcome", out var outcomeElement) || outcomeElement.ValueKind != JsonValueKind.Object)
+                    return null;
+
+                var homeWin = TryGetPropDouble(outcomeElement, "HomeWin");
+                var draw = TryGetPropDouble(outcomeElement, "Draw");
+                var awayWin = TryGetPropDouble(outcomeElement, "AwayWin");
+                if (homeWin is null || draw is null || awayWin is null)
+                    return null;
+
+                var probabilities = new OutcomeProbabilities(homeWin.Value, draw.Value, awayWin.Value);
+                if (!probabilities.IsValid)
+                    return null;
+
+                return new BaselineExtraction(effectiveModelName, probabilities.Normalize());
+            }
+            catch (JsonException)
+            {
+                return null;
+            }
+        }
+
+        private static string? TryGetPropString(JsonElement element, string propertyName) =>
+            element.TryGetProperty(propertyName, out var prop) && prop.ValueKind == JsonValueKind.String
+                ? prop.GetString()
+                : null;
+
+        private static double? TryGetPropDouble(JsonElement element, string propertyName) =>
+            element.TryGetProperty(propertyName, out var prop) && prop.ValueKind == JsonValueKind.Number
+                ? prop.TryGetDouble(out var value) ? value : null
+                : null;
     }
 
     public sealed record FixtureEvaluationRefreshReport(

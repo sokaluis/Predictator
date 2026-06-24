@@ -241,6 +241,223 @@ public class EvaluationServiceTests : TestFixtures
         Assert.Single(await db.Results.ToListAsync());
     }
 
+    private static string BuildContextAdjustedPayload(string baselinePredictorName = "Oráculo final", string? baselinePredictionIdentity = null, double baselineHomeWin = 0.45, double baselineDraw = 0.25, double baselineAwayWin = 0.30)
+    {
+        var baselineIdentity = baselinePredictionIdentity is null ? "null" : $"\"{baselinePredictionIdentity}\"";
+        return $$"""
+        {
+            "AdjustmentComparison": {
+                "BaselinePrediction": {
+                    "PredictorName": "{{baselinePredictorName}}",
+                    "PredictionIdentity": {{baselineIdentity}},
+                    "Outcome": {
+                        "HomeWin": {{BaselineJson(baselineHomeWin)}},
+                        "Draw": {{BaselineJson(baselineDraw)}},
+                        "AwayWin": {{BaselineJson(baselineAwayWin)}}
+                    }
+                },
+                "AdjustedPrediction": {
+                    "PredictorName": "Oráculo final",
+                    "PredictionIdentity": "Oráculo final + contexto API",
+                    "Outcome": {
+                        "HomeWin": 0.60,
+                        "Draw": 0.20,
+                        "AwayWin": 0.20
+                    }
+                },
+                "BaselineMethodName": "Oráculo final",
+                "AdjustedMethodName": "Oráculo final + contexto API",
+                "Signals": []
+            }
+        }
+        """;
+    }
+
+    private static string BaselineJson(double value) => value.ToString("F2", CultureInfo.InvariantCulture);
+
+    [Fact]
+    public async Task Evaluation_ContextAdjustedSnapshotWithBaseline_CreatesTwoEvaluations()
+    {
+        await using var db = await NewDb();
+        var fixture = new Fixture { Id = "f1", Group = "A", HomeTeamId = "a", AwayTeamId = "b" };
+        db.Teams.AddRange(new Team { Id = "a", Name = "A" }, new Team { Id = "b", Name = "B" });
+        db.Fixtures.Add(fixture);
+        db.Snapshots.Add(new PredictionSnapshot
+        {
+            Kind = "match",
+            FixtureId = "f1",
+            ModelName = MatchPrediction.ContextAdjustedPredictionIdentity,
+            InputSummaryHash = "hash",
+            PayloadJson = BuildContextAdjustedPayload(),
+            Explanation = "test",
+            HomeWin = .6,
+            Draw = .2,
+            AwayWin = .2
+        });
+        await db.SaveChangesAsync();
+
+        var count = await new EvaluationService(db).EvaluateLatestSnapshotAsync(fixture, 2, 1);
+
+        Assert.Equal(2, count);
+        var evaluations = await db.Evaluations.ToListAsync();
+        Assert.Contains(evaluations, e => e.ModelName == MatchPrediction.ContextAdjustedPredictionIdentity);
+        Assert.Contains(evaluations, e => e.ModelName == "Oráculo final");
+        Assert.Single(await db.Results.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Evaluation_ContextAdjustedWithBaseline_RerunIsIdempotent()
+    {
+        await using var db = await NewDb();
+        var fixture = new Fixture { Id = "f1", Group = "A", HomeTeamId = "a", AwayTeamId = "b" };
+        db.Teams.AddRange(new Team { Id = "a", Name = "A" }, new Team { Id = "b", Name = "B" });
+        db.Fixtures.Add(fixture);
+        db.Snapshots.Add(new PredictionSnapshot
+        {
+            Kind = "match",
+            FixtureId = "f1",
+            ModelName = MatchPrediction.ContextAdjustedPredictionIdentity,
+            InputSummaryHash = "hash",
+            PayloadJson = BuildContextAdjustedPayload(),
+            Explanation = "test",
+            HomeWin = .6,
+            Draw = .2,
+            AwayWin = .2
+        });
+        await db.SaveChangesAsync();
+        var service = new EvaluationService(db);
+
+        var first = await service.EvaluateLatestSnapshotAsync(fixture, 2, 1);
+        var second = await service.EvaluateLatestSnapshotAsync(fixture, 2, 1);
+
+        Assert.Equal(2, first);
+        Assert.Equal(0, second);
+        var evaluations = await db.Evaluations.ToListAsync();
+        Assert.Equal(2, evaluations.Count);
+        Assert.Single(await db.Results.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Evaluation_ContextAdjustedWithBaseline_SkipsWhenBaselineModelNameMatchesTopLevel()
+    {
+        await using var db = await NewDb();
+        var fixture = new Fixture { Id = "f1", Group = "A", HomeTeamId = "a", AwayTeamId = "b" };
+        db.Teams.AddRange(new Team { Id = "a", Name = "A" }, new Team { Id = "b", Name = "B" });
+        db.Fixtures.Add(fixture);
+        // Baseline PredictionIdentity matches top-level ModelName → skip synthesis
+        db.Snapshots.Add(new PredictionSnapshot
+        {
+            Kind = "match",
+            FixtureId = "f1",
+            ModelName = "Oráculo final",
+            InputSummaryHash = "hash",
+            PayloadJson = BuildContextAdjustedPayload(baselinePredictionIdentity: "Oráculo final"),
+            Explanation = "test",
+            HomeWin = .6,
+            Draw = .2,
+            AwayWin = .2
+        });
+        await db.SaveChangesAsync();
+
+        var count = await new EvaluationService(db).EvaluateLatestSnapshotAsync(fixture, 2, 1);
+
+        Assert.Equal(1, count);
+        var evaluation = Assert.Single(await db.Evaluations.ToListAsync());
+        Assert.Equal("Oráculo final", evaluation.ModelName);
+    }
+
+    [Fact]
+    public async Task Evaluation_WithoutComparisonPayload_EvaluatesTopLevelOnly()
+    {
+        await using var db = await NewDb();
+        var fixture = new Fixture { Id = "f1", Group = "A", HomeTeamId = "a", AwayTeamId = "b" };
+        db.Teams.AddRange(new Team { Id = "a", Name = "A" }, new Team { Id = "b", Name = "B" });
+        db.Fixtures.Add(fixture);
+        db.Snapshots.Add(new PredictionSnapshot
+        {
+            Kind = "match",
+            FixtureId = "f1",
+            ModelName = "Oráculo final",
+            InputSummaryHash = "hash",
+            PayloadJson = "{}",
+            Explanation = "test",
+            HomeWin = .6,
+            Draw = .2,
+            AwayWin = .2
+        });
+        await db.SaveChangesAsync();
+
+        var count = await new EvaluationService(db).EvaluateLatestSnapshotAsync(fixture, 2, 1);
+
+        Assert.Equal(1, count);
+        var evaluation = Assert.Single(await db.Evaluations.ToListAsync());
+        Assert.Equal("Oráculo final", evaluation.ModelName);
+    }
+
+    [Fact]
+    public async Task Evaluation_ContextAdjustedBaselineDoesNotDuplicateTopLevelEvaluationInSameCall()
+    {
+        await using var db = await NewDb();
+        var predictedAt = DateTimeOffset.Parse("2026-01-01T00:00:00Z");
+        var fixture = new Fixture { Id = "f1", Group = "A", HomeTeamId = "a", AwayTeamId = "b" };
+        db.Teams.AddRange(new Team { Id = "a", Name = "A" }, new Team { Id = "b", Name = "B" });
+        db.Fixtures.Add(fixture);
+        db.Snapshots.AddRange(
+            Snapshot("f1", predictedAt, "Oráculo final"),
+            new PredictionSnapshot
+            {
+                Kind = "match",
+                FixtureId = "f1",
+                ModelName = MatchPrediction.ContextAdjustedPredictionIdentity,
+                CreatedAt = predictedAt,
+                InputSummaryHash = "hash-context",
+                PayloadJson = BuildContextAdjustedPayload(),
+                Explanation = "test",
+                HomeWin = .6,
+                Draw = .2,
+                AwayWin = .2
+            });
+        await db.SaveChangesAsync();
+
+        var count = await new EvaluationService(db).EvaluateLatestSnapshotAsync(fixture, 2, 1);
+
+        var evaluations = await db.Evaluations.ToListAsync();
+        Assert.Equal(2, count);
+        Assert.Equal(2, evaluations.Count);
+        Assert.Single(evaluations.Where(e => e.ModelName == "Oráculo final"));
+        Assert.Single(evaluations.Where(e => e.ModelName == MatchPrediction.ContextAdjustedPredictionIdentity));
+    }
+
+    [Theory]
+    [InlineData("{ not valid json")]
+    [InlineData("{ \"AdjustmentComparison\": { \"BaselinePrediction\": { \"PredictorName\": \"Oráculo final\", \"Outcome\": { \"HomeWin\": 1e9999, \"Draw\": 0.25, \"AwayWin\": 0.25 } }, \"AdjustedPrediction\": {} } }")]
+    public async Task Evaluation_MalformedComparisonPayload_EvaluatesTopLevelOnly(string payloadJson)
+    {
+        await using var db = await NewDb();
+        var fixture = new Fixture { Id = "f1", Group = "A", HomeTeamId = "a", AwayTeamId = "b" };
+        db.Teams.AddRange(new Team { Id = "a", Name = "A" }, new Team { Id = "b", Name = "B" });
+        db.Fixtures.Add(fixture);
+        db.Snapshots.Add(new PredictionSnapshot
+        {
+            Kind = "match",
+            FixtureId = "f1",
+            ModelName = MatchPrediction.ContextAdjustedPredictionIdentity,
+            InputSummaryHash = "hash",
+            PayloadJson = payloadJson,
+            Explanation = "test",
+            HomeWin = .6,
+            Draw = .2,
+            AwayWin = .2
+        });
+        await db.SaveChangesAsync();
+
+        var count = await new EvaluationService(db).EvaluateLatestSnapshotAsync(fixture, 2, 1);
+
+        var evaluation = Assert.Single(await db.Evaluations.ToListAsync());
+        Assert.Equal(1, count);
+        Assert.Equal(MatchPrediction.ContextAdjustedPredictionIdentity, evaluation.ModelName);
+    }
+
     private static Fixture PlayedFixture(string id, int homeGoals, int awayGoals) => new()
     {
         Id = id,

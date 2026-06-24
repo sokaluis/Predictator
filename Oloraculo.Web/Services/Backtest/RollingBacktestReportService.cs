@@ -140,7 +140,9 @@ public sealed class RollingBacktestReportService
         AddOracleRankingBiasBreakdown(lines, report.Summaries);
         AddOracleRankingBiasBySegment(lines, report.SegmentSummaries);
         AddOracleRankingBiasSubgroupMetrics(lines, report.Summaries);
+        AddOracleRankingBiasDeltaSummaries(lines, report.Summaries);
         AddOracleRankingBiasSubgroupMetricsBySegment(lines, report.SegmentSummaries);
+        AddOracleRankingBiasDeltaSummariesBySegment(lines, report.SegmentSummaries);
 
         if (report.SegmentSummaries.Count > 0)
         {
@@ -391,6 +393,80 @@ public sealed class RollingBacktestReportService
                     CultureInfo.InvariantCulture,
                     $"| {segment.SegmentName} | No | {s.Count} | {s.MeanBrier:0.0000} | {s.MeanLogLoss:0.0000} | {s.MeanRps:0.0000} | {s.TopPickAccuracy:P1} |"));
             }
+        }
+    }
+
+    private static void AddOracleRankingBiasDeltaSummaries(
+        List<string> lines,
+        IReadOnlyList<BacktestModelSummary> summaries)
+    {
+        var oracle = summaries.FirstOrDefault(summary =>
+            string.Equals(summary.ModelName, "Oráculo final", StringComparison.Ordinal));
+
+        var applied = oracle?.RankingBiasAppliedSummary;
+        var notApplied = oracle?.RankingBiasNotAppliedSummary;
+
+        if (applied is null || notApplied is null)
+            return;
+
+        var deltaBrier = applied.MeanBrier - notApplied.MeanBrier;
+        var deltaLogLoss = applied.MeanLogLoss - notApplied.MeanLogLoss;
+        var deltaRps = applied.MeanRps - notApplied.MeanRps;
+        var deltaTopPickAccuracy = applied.TopPickAccuracy - notApplied.TopPickAccuracy;
+
+        lines.Add("");
+        lines.Add("## Oráculo final — ranking bias delta summary (descriptive)");
+        lines.Add("Delta = bias-applied minus bias-not-applied; this is a descriptive subgroup comparison, not causal lift and not a same-fixture counterfactual.");
+        lines.Add("");
+        lines.Add("| Metric | Δ (Applied − Not applied) |");
+        lines.Add("| --- | ---: |");
+        lines.Add(string.Create(
+            CultureInfo.InvariantCulture,
+            $"| ΔMeanBrier | {deltaBrier:+0.0000;-0.0000;0.0000} |"));
+        lines.Add(string.Create(
+            CultureInfo.InvariantCulture,
+            $"| ΔMeanLogLoss | {deltaLogLoss:+0.0000;-0.0000;0.0000} |"));
+        lines.Add(string.Create(
+            CultureInfo.InvariantCulture,
+            $"| ΔMeanRPS | {deltaRps:+0.0000;-0.0000;0.0000} |"));
+        lines.Add(string.Create(
+            CultureInfo.InvariantCulture,
+            $"| ΔTopPickAccuracy | {deltaTopPickAccuracy * 100:+0.0;-0.0;0.0} pp |"));
+    }
+
+    private static void AddOracleRankingBiasDeltaSummariesBySegment(
+        List<string> lines,
+        IReadOnlyList<BacktestSegmentModelSummary> segmentSummaries)
+    {
+        var oracleSegments = segmentSummaries
+            .Where(s => string.Equals(s.Summary.ModelName, "Oráculo final", StringComparison.Ordinal))
+            .Where(s => s.Summary.RankingBiasAppliedSummary is not null &&
+                        s.Summary.RankingBiasNotAppliedSummary is not null)
+            .ToList();
+
+        if (oracleSegments.Count == 0)
+            return;
+
+        lines.Add("");
+        lines.Add("## Oráculo final — ranking bias delta summary by segment (descriptive)");
+        lines.Add("Delta = bias-applied minus bias-not-applied; this is a descriptive subgroup comparison, not causal lift and not a same-fixture counterfactual.");
+        lines.Add("");
+        lines.Add("| Segment | ΔMeanBrier | ΔMeanLogLoss | ΔMeanRPS | ΔTopPickAccuracy |");
+        lines.Add("| --- | ---: | ---: | ---: | ---: |");
+
+        foreach (var segment in oracleSegments)
+        {
+            var applied = segment.Summary.RankingBiasAppliedSummary!;
+            var notApplied = segment.Summary.RankingBiasNotAppliedSummary!;
+
+            var deltaBrier = applied.MeanBrier - notApplied.MeanBrier;
+            var deltaLogLoss = applied.MeanLogLoss - notApplied.MeanLogLoss;
+            var deltaRps = applied.MeanRps - notApplied.MeanRps;
+            var deltaTopPickAccuracy = applied.TopPickAccuracy - notApplied.TopPickAccuracy;
+
+            lines.Add(string.Create(
+                CultureInfo.InvariantCulture,
+                $"| {segment.SegmentName} | {deltaBrier:+0.0000;-0.0000;0.0000} | {deltaLogLoss:+0.0000;-0.0000;0.0000} | {deltaRps:+0.0000;-0.0000;0.0000} | {deltaTopPickAccuracy * 100:+0.0;-0.0;0.0} pp |"));
         }
     }
 

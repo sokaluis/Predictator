@@ -1171,6 +1171,151 @@ public class RollingBacktestReportServiceTests
         Assert.DoesNotContain("| World Cup qualifiers |", output);
     }
 
+    [Fact]
+    public void Render_PrintsOracleRankingBiasDeltaSummary()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(6, 6, 0, 0, 0, []),
+            [
+                new BacktestModelSummary("Modelo base", 2, 0.667, 1.099, 0.333, 0.5),
+                new BacktestModelSummary("Oráculo final", 6, 0.400, 0.700, 0.190, 0.80)
+                {
+                    RankingBiasAppliedCount = 3,
+                    RankingBiasNotAppliedCount = 3,
+                    RankingBiasAppliedSummary = new BacktestBiasGroupSummary(3, 0.3500, 0.6200, 0.1700, 0.85),
+                    RankingBiasNotAppliedSummary = new BacktestBiasGroupSummary(3, 0.4500, 0.7800, 0.2100, 0.75)
+                }
+            ]);
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.Contains("## Oráculo final — ranking bias delta summary (descriptive)", output);
+        Assert.Contains("descriptive subgroup comparison, not causal lift", output);
+        Assert.Contains("| Metric | Δ (Applied − Not applied) |", output);
+        Assert.Contains("| ΔMeanBrier | -0.1000 |", output);
+        Assert.Contains("| ΔMeanLogLoss | -0.1600 |", output);
+        Assert.Contains("| ΔMeanRPS | -0.0400 |", output);
+        Assert.Contains("| ΔTopPickAccuracy | +10.0 pp |", output);
+    }
+
+    [Fact]
+    public void Render_OmitsRankingBiasDeltaSummaryWhenOneSideMissing()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(4, 4, 0, 0, 0, []),
+            [
+                new BacktestModelSummary("Oráculo final", 2, 0.350, 0.620, 0.170, 0.85)
+                {
+                    RankingBiasAppliedCount = 2,
+                    RankingBiasNotAppliedCount = 0,
+                    RankingBiasAppliedSummary = new BacktestBiasGroupSummary(2, 0.3500, 0.6200, 0.1700, 0.85)
+                }
+            ]);
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.DoesNotContain("## Oráculo final — ranking bias delta summary", output);
+    }
+
+    [Fact]
+    public void Render_PrintsOracleRankingBiasDeltaSummaryBySegment()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(6, 6, 0, 0, 0, []),
+            [new BacktestModelSummary("Oráculo final", 6, 0.400, 0.700, 0.190, 0.80)])
+        {
+            SegmentSummaries =
+            [
+                SegmentSummaryWithOracleBiasSubgroup(
+                    BacktestMatchSegmentClassifier.Friendlies,
+                    "Oráculo final", 3,
+                    appliedSummary: new BacktestBiasGroupSummary(2, 0.3500, 0.6200, 0.1700, 0.85),
+                    notAppliedSummary: new BacktestBiasGroupSummary(1, 0.4500, 0.7800, 0.2100, 0.75)),
+                SegmentSummaryWithOracleBiasSubgroup(
+                    BacktestMatchSegmentClassifier.WorldCupQualifiers,
+                    "Oráculo final", 3,
+                    appliedSummary: new BacktestBiasGroupSummary(1, 0.3200, 0.5800, 0.1600, 0.90),
+                    notAppliedSummary: new BacktestBiasGroupSummary(2, 0.4800, 0.8200, 0.2300, 0.70))
+            ]
+        };
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.Contains("## Oráculo final — ranking bias delta summary by segment (descriptive)", output);
+        Assert.Contains("| Segment | ΔMeanBrier | ΔMeanLogLoss | ΔMeanRPS | ΔTopPickAccuracy |", output);
+        Assert.Contains("| Friendlies | -0.1000 | -0.1600 | -0.0400 | +10.0 pp |", output);
+        Assert.Contains("| World Cup qualifiers | -0.1600 | -0.2400 | -0.0700 | +20.0 pp |", output);
+    }
+
+    [Fact]
+    public void Render_RankingBiasDeltaSummaryBySegmentRespectsSegmentOrder()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(4, 4, 0, 0, 0, []),
+            [new BacktestModelSummary("Oráculo final", 4, 0.400, 0.700, 0.190, 0.80)])
+        {
+            SegmentSummaries =
+            [
+                SegmentSummaryWithOracleBiasSubgroup(
+                    BacktestMatchSegmentClassifier.WorldCupQualifiers,
+                    "Oráculo final", 2,
+                    appliedSummary: new BacktestBiasGroupSummary(1, 0.3200, 0.5800, 0.1600, 0.90),
+                    notAppliedSummary: new BacktestBiasGroupSummary(1, 0.4800, 0.8200, 0.2300, 0.70)),
+                SegmentSummaryWithOracleBiasSubgroup(
+                    BacktestMatchSegmentClassifier.Friendlies,
+                    "Oráculo final", 2,
+                    appliedSummary: new BacktestBiasGroupSummary(1, 0.3500, 0.6200, 0.1700, 0.85),
+                    notAppliedSummary: new BacktestBiasGroupSummary(1, 0.4500, 0.7800, 0.2100, 0.75))
+            ]
+        };
+
+        var output = RollingBacktestReportService.Render(report);
+
+        var sectionStart = output.IndexOf(
+            "## Oráculo final — ranking bias delta summary by segment", StringComparison.Ordinal);
+        var sectionEnd = output.IndexOf("## Performance by match type", sectionStart, StringComparison.Ordinal);
+        var deltaSection = output[sectionStart..sectionEnd];
+        var friendliesIndex = deltaSection.IndexOf("| Friendlies |", StringComparison.Ordinal);
+        var wcQualifiersIndex = deltaSection.IndexOf("| World Cup qualifiers |", StringComparison.Ordinal);
+
+        Assert.True(wcQualifiersIndex >= 0);
+        Assert.True(friendliesIndex >= 0);
+        Assert.True(wcQualifiersIndex < friendliesIndex);
+    }
+
+    [Fact]
+    public void Render_OmitsRankingBiasDeltaSummaryBySegmentWhenOneSideMissingForSegment()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(4, 4, 0, 0, 0, []),
+            [new BacktestModelSummary("Oráculo final", 4, 0.400, 0.700, 0.190, 0.80)])
+        {
+            SegmentSummaries =
+            [
+                SegmentSummaryWithOracleBiasSubgroup(
+                    BacktestMatchSegmentClassifier.Friendlies,
+                    "Oráculo final", 2,
+                    appliedSummary: new BacktestBiasGroupSummary(1, 0.3500, 0.6200, 0.1700, 0.85),
+                    notAppliedSummary: new BacktestBiasGroupSummary(1, 0.4500, 0.7800, 0.2100, 0.75)),
+                SegmentSummaryWithOracleBiasSubgroup(
+                    BacktestMatchSegmentClassifier.WorldCupQualifiers,
+                    "Oráculo final", 2,
+                    appliedSummary: new BacktestBiasGroupSummary(2, 0.3200, 0.5800, 0.1600, 0.90))
+            ]
+        };
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.Contains("## Oráculo final — ranking bias delta summary by segment", output);
+        var sectionStart = output.IndexOf(
+            "## Oráculo final — ranking bias delta summary by segment", StringComparison.Ordinal);
+        var sectionEnd = output.IndexOf("## Performance by match type", sectionStart, StringComparison.Ordinal);
+        var deltaSection = output[sectionStart..sectionEnd];
+
+        Assert.Contains("| Friendlies |", deltaSection);
+        Assert.DoesNotContain("| World Cup qualifiers |", deltaSection);
+    }
+
     private static HistoricalResultCsvRow Row(
         string date,
         string home,

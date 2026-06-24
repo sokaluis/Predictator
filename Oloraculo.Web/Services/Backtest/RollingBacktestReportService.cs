@@ -137,6 +137,8 @@ public sealed class RollingBacktestReportService
 
         AddOracleSelectorBreakdown(lines, report.Summaries);
         AddOracleSegmentBreakdown(lines, report.SegmentSummaries);
+        AddOracleChosenPredictorSubgroupMetrics(lines, report.Summaries);
+        AddOracleChosenPredictorSubgroupMetricsBySegment(lines, report.SegmentSummaries);
         AddOracleRankingBiasBreakdown(lines, report.Summaries);
         AddOracleRankingBiasBySegment(lines, report.SegmentSummaries);
         AddOracleRankingBiasSubgroupMetrics(lines, report.Summaries);
@@ -258,6 +260,65 @@ public sealed class RollingBacktestReportService
                 .ThenBy(kv => kv.Key, StringComparer.Ordinal))
             {
                 lines.Add($"| {segment.SegmentName} | {predictor} | {count} |");
+            }
+        }
+    }
+
+    private static void AddOracleChosenPredictorSubgroupMetrics(
+        List<string> lines,
+        IReadOnlyList<BacktestModelSummary> summaries)
+    {
+        var oracle = summaries.FirstOrDefault(summary =>
+            string.Equals(summary.ModelName, "Oráculo final", StringComparison.Ordinal));
+
+        if (oracle?.ChosenPredictorSubgroupMetrics is null || oracle.ChosenPredictorSubgroupMetrics.Count == 0)
+            return;
+
+        lines.Add("");
+        lines.Add("## Oráculo final — chosen predictor subgroup metrics");
+        lines.Add("Descriptive backtest metrics grouped by the underlying predictor the oracle selected for each fixture; do not interpret as causal comparisons between predictors.");
+        lines.Add("");
+        lines.Add("| Chosen predictor | Count | MeanBrier | MeanLogLoss | MeanRPS | TopPickAccuracy |");
+        lines.Add("| --- | ---: | ---: | ---: | ---: | ---: |");
+
+        foreach (var (predictor, metrics) in oracle.ChosenPredictorSubgroupMetrics
+            .OrderByDescending(kv => kv.Value.Count)
+            .ThenBy(kv => kv.Key, StringComparer.Ordinal))
+        {
+            lines.Add(string.Create(
+                CultureInfo.InvariantCulture,
+                $"| {predictor} | {metrics.Count} | {metrics.MeanBrier:0.0000} | {metrics.MeanLogLoss:0.0000} | {metrics.MeanRps:0.0000} | {metrics.TopPickAccuracy:P1} |"));
+        }
+    }
+
+    private static void AddOracleChosenPredictorSubgroupMetricsBySegment(
+        List<string> lines,
+        IReadOnlyList<BacktestSegmentModelSummary> segmentSummaries)
+    {
+        var oracleSegments = segmentSummaries
+            .Where(s => string.Equals(s.Summary.ModelName, "Oráculo final", StringComparison.Ordinal))
+            .Where(s => s.Summary.ChosenPredictorSubgroupMetrics.Count > 0)
+            .ToList();
+
+        if (oracleSegments.Count == 0)
+            return;
+
+        lines.Add("");
+        lines.Add("## Oráculo final — chosen predictor subgroup metrics by segment");
+        lines.Add("Descriptive backtest metrics grouped by the underlying predictor the oracle selected for each fixture within each segment; do not interpret as causal comparisons.");
+        lines.Add("");
+        lines.Add("| Segment | Chosen predictor | Count | MeanBrier | MeanLogLoss | MeanRPS | TopPickAccuracy |");
+        lines.Add("| --- | --- | ---: | ---: | ---: | ---: | ---: |");
+
+        foreach (var segment in oracleSegments)
+        {
+            foreach (var (predictor, metrics) in segment.Summary.ChosenPredictorSubgroupMetrics
+                .OrderByDescending(kv => kv.Value.Count)
+                .ThenBy(kv => kv.Key, StringComparer.Ordinal))
+            {
+                lines.Add(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"| {segment.SegmentName} | {predictor} | {metrics.Count} | {metrics.MeanBrier:0.0000} | {metrics.MeanLogLoss:0.0000} | {metrics.MeanRps:0.0000} | {metrics.TopPickAccuracy:P1} |"));
             }
         }
     }

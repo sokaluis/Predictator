@@ -1065,6 +1065,88 @@ public class RollingBacktestServiceTests
     }
 
     [Fact]
+    public void Compare_ChosenPredictorSubgroupMetricsForOracle()
+    {
+        var results = new[]
+        {
+            Result("first", "c", "a", "2024-01-01", 1, 1),
+            Result("second", "b", "c", "2024-01-02", 2, 0),
+            Result("target", "a", "b", "2024-01-03", 1, 0),
+            Result("future", "a", "b", "2024-01-04", 0, 1)
+        };
+        var strategies = new BacktestModelStrategy[]
+        {
+            new("elo-chosen", _ => new OracleChosenPredictorTestPredictor("Elo", new OutcomeProbabilities(0.70, 0.15, 0.15))),
+            new("goals-chosen", _ => new OracleChosenPredictorTestPredictor("Modelo de goles (Poisson)", new OutcomeProbabilities(0.60, 0.20, 0.20)))
+        };
+
+        var comparison = new RollingBacktestService().Compare(results, strategies, minimumPriorMatchesPerTeam: 1);
+
+        var oracleSummary = comparison.Summaries.Single(s => s.ModelName == "Oráculo final");
+        Assert.Equal(4, oracleSummary.Count);
+        Assert.NotEmpty(oracleSummary.ChosenPredictorSubgroupMetrics);
+
+        Assert.True(oracleSummary.ChosenPredictorSubgroupMetrics.TryGetValue("Elo", out var eloMetrics));
+        Assert.Equal(2, eloMetrics.Count);
+        Assert.True(double.IsFinite(eloMetrics.MeanBrier));
+        Assert.True(double.IsFinite(eloMetrics.MeanLogLoss));
+        Assert.True(double.IsFinite(eloMetrics.MeanRps));
+        Assert.True(double.IsFinite(eloMetrics.TopPickAccuracy));
+
+        Assert.True(oracleSummary.ChosenPredictorSubgroupMetrics.TryGetValue("Modelo de goles (Poisson)", out var goalsMetrics));
+        Assert.Equal(2, goalsMetrics.Count);
+
+        // Verify that subgroup counts sum to total Oracle evaluation count
+        var totalSubgroupCount = oracleSummary.ChosenPredictorSubgroupMetrics.Values.Sum(m => m.Count);
+        Assert.Equal(oracleSummary.Count, totalSubgroupCount);
+    }
+
+    [Fact]
+    public void Compare_NonOracleSummariesHaveEmptyChosenPredictorSubgroupMetrics()
+    {
+        var results = new[]
+        {
+            Result("first", "c", "a", "2024-01-01", 1, 1),
+            Result("second", "b", "c", "2024-01-02", 2, 0),
+            Result("target", "a", "b", "2024-01-03", 1, 0)
+        };
+
+        var comparison = new RollingBacktestService().Compare(results, minimumPriorMatchesPerTeam: 1);
+
+        foreach (var summary in comparison.Summaries.Where(s => s.ModelName != "Oráculo final"))
+        {
+            Assert.Empty(summary.ChosenPredictorSubgroupMetrics);
+        }
+    }
+
+    [Fact]
+    public void Compare_ChosenPredictorSubgroupMetricsAccuracy()
+    {
+        var results = new[]
+        {
+            Result("first", "c", "a", "2024-01-01", 1, 1),
+            Result("second", "b", "c", "2024-01-02", 2, 0),
+            Result("target", "a", "b", "2024-01-03", 1, 0),  // home win
+            Result("future", "a", "b", "2024-01-04", 0, 1)   // away win
+        };
+        var strategies = new BacktestModelStrategy[]
+        {
+            // This predictor always picks HomeWin, so TopPickCorrect = true for target, false for future
+            new("home-picker", _ => new OracleChosenPredictorTestPredictor("Modelo base", new OutcomeProbabilities(0.70, 0.15, 0.15)))
+        };
+
+        var comparison = new RollingBacktestService().Compare(results, strategies, minimumPriorMatchesPerTeam: 1);
+
+        var oracleSummary = comparison.Summaries.Single(s => s.ModelName == "Oráculo final");
+        Assert.True(oracleSummary.ChosenPredictorSubgroupMetrics.TryGetValue("Modelo base", out var metrics));
+        Assert.Equal(2, metrics.Count);
+        // target = home win → correct top pick; future = away win → wrong top pick → 1/2 = 0.5
+        Assert.Equal(0.5, metrics.TopPickAccuracy, precision: 6);
+        Assert.True(metrics.MeanBrier > 0);
+        Assert.True(metrics.MeanLogLoss > 0);
+    }
+
+    [Fact]
     public void Compare_SegmentOracleSummariesIncludeRankingBiasCounts()
     {
         var targetDate = DateTimeOffset.Parse("2024-01-03T00:00:00Z");
@@ -1150,10 +1232,14 @@ public class RollingBacktestServiceTests
         Source = "test"
     };
 
-    private sealed class FixedPredictor(string name, OutcomeProbabilities outcome) : IPredictor
+    private sealed class FixedPredictor(
+        string name,
+        OutcomeProbabilities outcome,
+        int priority = 0,
+        IReadOnlyList<SourceMetadata>? sources = null) : IPredictor
     {
         public string Name => name;
-        public int Priority => 0;
+        public int Priority => priority;
 
         public MatchPrediction Predict(MatchContext context) => new()
         {
@@ -1162,7 +1248,8 @@ public class RollingBacktestServiceTests
             FixtureId = context.Fixture.Id,
             HomeTeamId = context.HomeTeamId,
             AwayTeamId = context.AwayTeamId,
-            Outcome = outcome
+            Outcome = outcome,
+            Sources = sources ?? []
         };
     }
 
@@ -1291,6 +1378,26 @@ public class RollingBacktestServiceTests
             RatingTypeEnum.Elo => home ? snapshot?.HomeElo : snapshot?.AwayElo,
             RatingTypeEnum.Fifa => home ? snapshot?.HomeFifaRank : snapshot?.AwayFifaRank,
             _ => null
+        };
+    }
+
+    private sealed class OracleChosenPredictorTestPredictor(string chosenPredictorName, OutcomeProbabilities outcome) : IPredictor
+    {
+        public string Name => "Oráculo final";
+        public int Priority => int.MaxValue;
+
+        public MatchPrediction Predict(MatchContext context) => new()
+        {
+            PredictorName = "Oráculo final",
+            PredictorPriority = Priority,
+            FixtureId = context.Fixture.Id,
+            HomeTeamId = context.HomeTeamId,
+            AwayTeamId = context.AwayTeamId,
+            Outcome = outcome,
+            Sources =
+            [
+                new Models.SourceMetadata("model ladder", "selection", Notes: chosenPredictorName)
+            ]
         };
     }
 

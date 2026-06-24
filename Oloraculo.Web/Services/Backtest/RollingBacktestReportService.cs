@@ -139,6 +139,8 @@ public sealed class RollingBacktestReportService
         AddOracleSegmentBreakdown(lines, report.SegmentSummaries);
         AddOracleChosenPredictorSubgroupMetrics(lines, report.Summaries);
         AddOracleChosenPredictorSubgroupMetricsBySegment(lines, report.SegmentSummaries);
+        AddOracleChosenPredictorDeltaSummaries(lines, report.Summaries);
+        AddOracleChosenPredictorDeltaSummariesBySegment(lines, report.SegmentSummaries);
         AddOracleRankingBiasBreakdown(lines, report.Summaries);
         AddOracleRankingBiasBySegment(lines, report.SegmentSummaries);
         AddOracleRankingBiasSubgroupMetrics(lines, report.Summaries);
@@ -319,6 +321,77 @@ public sealed class RollingBacktestReportService
                 lines.Add(string.Create(
                     CultureInfo.InvariantCulture,
                     $"| {segment.SegmentName} | {predictor} | {metrics.Count} | {metrics.MeanBrier:0.0000} | {metrics.MeanLogLoss:0.0000} | {metrics.MeanRps:0.0000} | {metrics.TopPickAccuracy:P1} |"));
+            }
+        }
+    }
+
+    private static void AddOracleChosenPredictorDeltaSummaries(
+        List<string> lines,
+        IReadOnlyList<BacktestModelSummary> summaries)
+    {
+        var oracle = summaries.FirstOrDefault(summary =>
+            string.Equals(summary.ModelName, "Oráculo final", StringComparison.Ordinal));
+
+        if (oracle?.ChosenPredictorSubgroupMetrics is null || oracle.ChosenPredictorSubgroupMetrics.Count == 0)
+            return;
+
+        lines.Add("");
+        lines.Add("## Oráculo final — chosen predictor delta vs overall (descriptive)");
+        lines.Add("Delta = chosen-predictor subgroup minus Oráculo overall; descriptive only; not causal and not a same-fixture counterfactual.");
+        lines.Add("");
+        lines.Add("| Chosen predictor | ΔMeanBrier | ΔMeanLogLoss | ΔMeanRPS | ΔTopPickAccuracy |");
+        lines.Add("| --- | ---: | ---: | ---: | ---: |");
+
+        foreach (var (predictor, metrics) in oracle.ChosenPredictorSubgroupMetrics
+            .OrderByDescending(kv => kv.Value.Count)
+            .ThenBy(kv => kv.Key, StringComparer.Ordinal))
+        {
+            var deltaBrier = metrics.MeanBrier - oracle.MeanBrier;
+            var deltaLogLoss = metrics.MeanLogLoss - oracle.MeanLogLoss;
+            var deltaRps = metrics.MeanRps - oracle.MeanRps;
+            var deltaTopPickAccuracy = metrics.TopPickAccuracy - oracle.TopPickAccuracy;
+
+            lines.Add(string.Create(
+                CultureInfo.InvariantCulture,
+                $"| {predictor} | {deltaBrier:+0.0000;-0.0000;0.0000} | {deltaLogLoss:+0.0000;-0.0000;0.0000} | {deltaRps:+0.0000;-0.0000;0.0000} | {deltaTopPickAccuracy * 100:+0.0;-0.0;0.0} pp |"));
+        }
+    }
+
+    private static void AddOracleChosenPredictorDeltaSummariesBySegment(
+        List<string> lines,
+        IReadOnlyList<BacktestSegmentModelSummary> segmentSummaries)
+    {
+        var oracleSegments = segmentSummaries
+            .Where(s => string.Equals(s.Summary.ModelName, "Oráculo final", StringComparison.Ordinal))
+            .Where(s => s.Summary.ChosenPredictorSubgroupMetrics.Count > 0)
+            .ToList();
+
+        if (oracleSegments.Count == 0)
+            return;
+
+        lines.Add("");
+        lines.Add("## Oráculo final — chosen predictor delta by segment (descriptive)");
+        lines.Add("Delta = chosen-predictor subgroup minus that segment's Oráculo summary; descriptive only; not causal and not a same-fixture counterfactual.");
+        lines.Add("");
+        lines.Add("| Segment | Chosen predictor | ΔMeanBrier | ΔMeanLogLoss | ΔMeanRPS | ΔTopPickAccuracy |");
+        lines.Add("| --- | --- | ---: | ---: | ---: | ---: |");
+
+        foreach (var segment in oracleSegments)
+        {
+            var oracleSummary = segment.Summary;
+
+            foreach (var (predictor, metrics) in segment.Summary.ChosenPredictorSubgroupMetrics
+                .OrderByDescending(kv => kv.Value.Count)
+                .ThenBy(kv => kv.Key, StringComparer.Ordinal))
+            {
+                var deltaBrier = metrics.MeanBrier - oracleSummary.MeanBrier;
+                var deltaLogLoss = metrics.MeanLogLoss - oracleSummary.MeanLogLoss;
+                var deltaRps = metrics.MeanRps - oracleSummary.MeanRps;
+                var deltaTopPickAccuracy = metrics.TopPickAccuracy - oracleSummary.TopPickAccuracy;
+
+                lines.Add(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"| {segment.SegmentName} | {predictor} | {deltaBrier:+0.0000;-0.0000;0.0000} | {deltaLogLoss:+0.0000;-0.0000;0.0000} | {deltaRps:+0.0000;-0.0000;0.0000} | {deltaTopPickAccuracy * 100:+0.0;-0.0;0.0} pp |"));
             }
         }
     }

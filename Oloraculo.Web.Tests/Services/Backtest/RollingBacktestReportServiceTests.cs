@@ -1521,6 +1521,160 @@ public class RollingBacktestReportServiceTests
         Assert.True(contextoIndex < eloIndex);
     }
 
+    [Fact]
+    public void Render_PrintsOracleChosenPredictorDeltaVsOverall()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(6, 6, 0, 0, 0, []),
+            [
+                new BacktestModelSummary("Modelo base", 2, 0.667, 1.099, 0.333, 0.5),
+                new BacktestModelSummary("Oráculo final", 6, 0.4000, 0.7000, 0.1900, 0.80)
+                {
+                    ChosenPredictorSubgroupMetrics = new Dictionary<string, BacktestBiasGroupSummary>(StringComparer.Ordinal)
+                    {
+                        ["Modelo de goles (Poisson)"] = new(3, 0.3500, 0.6200, 0.1700, 0.85),
+                        ["Elo"] = new(2, 0.4500, 0.7800, 0.2100, 0.75),
+                        ["Goles + contexto reciente"] = new(1, 0.4800, 0.8200, 0.2300, 0.70)
+                    }
+                }
+            ]);
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.Contains("## Oráculo final — chosen predictor delta vs overall (descriptive)", output);
+        Assert.Contains("Delta = chosen-predictor subgroup minus Oráculo overall", output);
+        Assert.Contains("descriptive only; not causal and not a same-fixture counterfactual", output);
+        Assert.Contains("| Chosen predictor | ΔMeanBrier | ΔMeanLogLoss | ΔMeanRPS | ΔTopPickAccuracy |", output);
+        Assert.Contains("| Modelo de goles (Poisson) | -0.0500 | -0.0800 | -0.0200 | +5.0 pp |", output);
+        Assert.Contains("| Elo | +0.0500 | +0.0800 | +0.0200 | -5.0 pp |", output);
+        Assert.Contains("| Goles + contexto reciente | +0.0800 | +0.1200 | +0.0400 | -10.0 pp |", output);
+    }
+
+    [Fact]
+    public void Render_OmitsOracleChosenPredictorDeltaVsOverallWhenNoSubgroups()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(4, 4, 0, 0, 0, []),
+            [
+                new BacktestModelSummary("Oráculo final", 4, 0.400, 0.700, 0.190, 0.80)
+            ]);
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.DoesNotContain("## Oráculo final — chosen predictor delta vs overall", output);
+    }
+
+    [Fact]
+    public void Render_PrintsOracleChosenPredictorDeltaBySegment()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(6, 6, 0, 0, 0, []),
+            [new BacktestModelSummary("Oráculo final", 6, 0.400, 0.700, 0.190, 0.80)])
+        {
+            SegmentSummaries =
+            [
+                SegmentSummaryWithOracleChosenSubgroupAndMetrics(
+                    BacktestMatchSegmentClassifier.Friendlies,
+                    "Oráculo final", 3,
+                    oracleBrier: 0.3800, oracleLogLoss: 0.6500, oracleRps: 0.1800, oracleTopPick: 0.82,
+                    new Dictionary<string, BacktestBiasGroupSummary>(StringComparer.Ordinal)
+                    {
+                        ["Modelo de goles (Poisson)"] = new(2, 0.3500, 0.6200, 0.1700, 0.85),
+                        ["Elo"] = new(1, 0.4500, 0.7800, 0.2100, 0.75)
+                    }),
+                SegmentSummaryWithOracleChosenSubgroupAndMetrics(
+                    BacktestMatchSegmentClassifier.WorldCupQualifiers,
+                    "Oráculo final", 3,
+                    oracleBrier: 0.4200, oracleLogLoss: 0.7500, oracleRps: 0.2000, oracleTopPick: 0.78,
+                    new Dictionary<string, BacktestBiasGroupSummary>(StringComparer.Ordinal)
+                    {
+                        ["Goles + contexto reciente"] = new(2, 0.3200, 0.5800, 0.1600, 0.90),
+                        ["Modelo de goles (Poisson)"] = new(1, 0.4800, 0.8200, 0.2300, 0.70)
+                    })
+            ]
+        };
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.Contains("## Oráculo final — chosen predictor delta by segment (descriptive)", output);
+        Assert.Contains("Delta = chosen-predictor subgroup minus that segment's Oráculo summary", output);
+        Assert.Contains("| Segment | Chosen predictor | ΔMeanBrier | ΔMeanLogLoss | ΔMeanRPS | ΔTopPickAccuracy |", output);
+        // Friendlies: Poisson delta = 0.3500 - 0.3800 = -0.0300
+        Assert.Contains("| Friendlies | Modelo de goles (Poisson) | -0.0300 | -0.0300 | -0.0100 | +3.0 pp |", output);
+        // Friendlies: Elo delta = 0.4500 - 0.3800 = +0.0700
+        Assert.Contains("| Friendlies | Elo | +0.0700 | +0.1300 | +0.0300 | -7.0 pp |", output);
+        // WCQ: Goles + contexto delta = 0.3200 - 0.4200 = -0.1000
+        Assert.Contains("| World Cup qualifiers | Goles + contexto reciente | -0.1000 | -0.1700 | -0.0400 | +12.0 pp |", output);
+    }
+
+    [Fact]
+    public void Render_ChosenPredictorDeltaBySegmentRespectsSegmentOrder()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(4, 4, 0, 0, 0, []),
+            [new BacktestModelSummary("Oráculo final", 4, 0.400, 0.700, 0.190, 0.80)])
+        {
+            SegmentSummaries =
+            [
+                SegmentSummaryWithOracleChosenSubgroupAndMetrics(
+                    BacktestMatchSegmentClassifier.WorldCupQualifiers,
+                    "Oráculo final", 2,
+                    oracleBrier: 0.3200, oracleLogLoss: 0.5800, oracleRps: 0.1600, oracleTopPick: 0.90,
+                    new Dictionary<string, BacktestBiasGroupSummary>(StringComparer.Ordinal)
+                    {
+                        ["Elo"] = new(2, 0.3200, 0.5800, 0.1600, 0.90)
+                    }),
+                SegmentSummaryWithOracleChosenSubgroupAndMetrics(
+                    BacktestMatchSegmentClassifier.Friendlies,
+                    "Oráculo final", 2,
+                    oracleBrier: 0.3500, oracleLogLoss: 0.6200, oracleRps: 0.1700, oracleTopPick: 0.85,
+                    new Dictionary<string, BacktestBiasGroupSummary>(StringComparer.Ordinal)
+                    {
+                        ["Elo"] = new(2, 0.3500, 0.6200, 0.1700, 0.85)
+                    })
+            ]
+        };
+
+        var output = RollingBacktestReportService.Render(report);
+
+        var sectionStart = output.IndexOf(
+            "## Oráculo final — chosen predictor delta by segment", StringComparison.Ordinal);
+        var sectionEnd = output.IndexOf("## Performance by match type", sectionStart, StringComparison.Ordinal);
+        var section = output[sectionStart..sectionEnd];
+        var friendliesIndex = section.IndexOf("| Friendlies |", StringComparison.Ordinal);
+        var wcQualifiersIndex = section.IndexOf("| World Cup qualifiers |", StringComparison.Ordinal);
+
+        Assert.True(wcQualifiersIndex >= 0);
+        Assert.True(friendliesIndex >= 0);
+        Assert.True(wcQualifiersIndex < friendliesIndex);
+    }
+
+    [Fact]
+    public void Render_OmitsOracleChosenPredictorDeltaBySegmentWhenNoSubgroups()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(4, 4, 0, 0, 0, []),
+            [new BacktestModelSummary("Oráculo final", 4, 0.400, 0.700, 0.190, 0.80)])
+        {
+            SegmentSummaries =
+            [
+                new BacktestSegmentModelSummary(
+                    BacktestMatchSegmentClassifier.Friendlies,
+                    new BacktestModelSummary("Oráculo final", 2, 0.400, 0.700, 0.190, 0.80)
+                    {
+                        ChosenPredictorCounts = new Dictionary<string, int>(StringComparer.Ordinal)
+                        {
+                            ["Modelo de goles (Poisson)"] = 2
+                        }
+                    })
+            ]
+        };
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.DoesNotContain("## Oráculo final — chosen predictor delta by segment", output);
+    }
+
     private static HistoricalResultCsvRow Row(
         string date,
         string home,
@@ -1577,6 +1731,20 @@ public class RollingBacktestReportServiceTests
         int count,
         IReadOnlyDictionary<string, BacktestBiasGroupSummary> chosenPredictorSubgroupMetrics) =>
         new(segment, new BacktestModelSummary(model, count, 0.400, 0.700, 0.190, 0.80)
+        {
+            ChosenPredictorSubgroupMetrics = chosenPredictorSubgroupMetrics
+        });
+
+    private static BacktestSegmentModelSummary SegmentSummaryWithOracleChosenSubgroupAndMetrics(
+        string segment,
+        string model,
+        int count,
+        double oracleBrier,
+        double oracleLogLoss,
+        double oracleRps,
+        double oracleTopPick,
+        IReadOnlyDictionary<string, BacktestBiasGroupSummary> chosenPredictorSubgroupMetrics) =>
+        new(segment, new BacktestModelSummary(model, count, oracleBrier, oracleLogLoss, oracleRps, oracleTopPick)
         {
             ChosenPredictorSubgroupMetrics = chosenPredictorSubgroupMetrics
         });

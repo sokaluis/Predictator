@@ -52,6 +52,9 @@ namespace Oloraculo.Web.Services
             var context = await BuildContextAsync(fixture, ct);
             var ladder = predictors.Select(p => p.Predict(context)).ToList();
             var best = FinalPredictionSelector.Select(ladder);
+            var baselineContext = WithoutFixtureContext(context);
+            var baselineLadder = predictors.Select(p => p.Predict(baselineContext)).ToList();
+            var baselineBest = FinalPredictionSelector.Select(baselineLadder);
 
             return new MatchPredictionResult
             {
@@ -60,9 +63,93 @@ namespace Oloraculo.Web.Services
                 AwayTeamName = context.AwayTeam.Name,
                 Predictions = ladder,
                 BestPrediction = best,
-                Criteria = PredictionCriteriaBuilder.Build(context, ladder, best)
+                Criteria = PredictionCriteriaBuilder.Build(context, ladder, best),
+                AdjustmentComparison = BuildAdjustmentComparison(context, baselineBest, best)
             };
         }
+
+        private static MatchContext WithoutFixtureContext(MatchContext context) => new()
+        {
+            Fixture = context.Fixture,
+            HomeTeam = context.HomeTeam,
+            AwayTeam = context.AwayTeam,
+            HomeElo = context.HomeElo,
+            AwayElo = context.AwayElo,
+            HomeFifaRank = context.HomeFifaRank,
+            AwayFifaRank = context.AwayFifaRank,
+            HomeRecentMatchHistory = context.HomeRecentMatchHistory,
+            AwayRecentMatchHistory = context.AwayRecentMatchHistory,
+            FixtureContext = null
+        };
+
+        private static PredictionAdjustmentComparison? BuildAdjustmentComparison(
+            MatchContext context,
+            MatchPrediction baselineBest,
+            MatchPrediction adjustedBest)
+        {
+            var fixtureContext = context.FixtureContext;
+            if (fixtureContext is null)
+                return null;
+
+            var signals = new List<PredictionAdjustmentSignal>();
+            var availabilityApplied = adjustedBest.FeaturesUsed.Any(f => f.Contains("Disponibilidad de jugadores", StringComparison.OrdinalIgnoreCase));
+            var hasPlayerContext = fixtureContext.UnavailableHomePlayers > 0
+                                   || fixtureContext.UnavailableAwayPlayers > 0
+                                   || fixtureContext.UnavailableHomeAttackImpact > 0
+                                   || fixtureContext.UnavailableHomeDefenseImpact > 0
+                                   || fixtureContext.UnavailableAwayAttackImpact > 0
+                                   || fixtureContext.UnavailableAwayDefenseImpact > 0;
+
+            if (hasPlayerContext)
+            {
+                signals.Add(new PredictionAdjustmentSignal
+                {
+                    Name = "Disponibilidad de jugadores",
+                    Applied = availabilityApplied,
+                    Available = true,
+                    Modeled = true,
+                    Detail = $"Bajas: {context.HomeTeam.Name} {fixtureContext.UnavailableHomePlayers}, {context.AwayTeam.Name} {fixtureContext.UnavailableAwayPlayers}. Impacto por bajas propias: {context.HomeTeam.Name} ataque {fixtureContext.UnavailableHomeAttackImpact:P1}, defensa {fixtureContext.UnavailableHomeDefenseImpact:P1}; {context.AwayTeam.Name} ataque {fixtureContext.UnavailableAwayAttackImpact:P1}, defensa {fixtureContext.UnavailableAwayDefenseImpact:P1}."
+                });
+            }
+
+            if (fixtureContext.HasLineups)
+            {
+                signals.Add(new PredictionAdjustmentSignal
+                {
+                    Name = "Alineaciones",
+                    Applied = false,
+                    Available = true,
+                    Modeled = false,
+                    Detail = "Disponibles vía API-Football Pro; no aplicadas porque todavía no hay conversión validada a scoring."
+                });
+            }
+
+            if (fixtureContext.HasOdds)
+            {
+                signals.Add(new PredictionAdjustmentSignal
+                {
+                    Name = "Cuotas (odds)",
+                    Applied = false,
+                    Available = true,
+                    Modeled = false,
+                    Detail = "Disponibles vía API-Football Pro; no aplicadas porque todavía no hay calibración validada por cuotas."
+                });
+            }
+
+            return new PredictionAdjustmentComparison
+            {
+                BaselinePrediction = baselineBest,
+                AdjustedPrediction = adjustedBest,
+                BaselineMethodName = SelectedMethodName(baselineBest),
+                AdjustedMethodName = SelectedMethodName(adjustedBest),
+                Signals = signals
+            };
+        }
+
+        private static string SelectedMethodName(MatchPrediction prediction) =>
+            prediction.Sources.FirstOrDefault(source =>
+                string.Equals(source.Name, "model ladder", StringComparison.OrdinalIgnoreCase))?.Notes
+            ?? prediction.PredictorName;
 
         public async Task<MatchContext> BuildContextAsync(Fixture fixture, CancellationToken ct = default)
         {

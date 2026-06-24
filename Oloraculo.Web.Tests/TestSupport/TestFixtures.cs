@@ -116,6 +116,7 @@ public abstract class TestFixtures
             AssertPredictionEqual(expected.Predictions[i], actual.Predictions[i]);
 
         AssertPredictionEqual(expected.BestPrediction, actual.BestPrediction);
+        AssertAdjustmentComparisonEqual(expected.AdjustmentComparison, actual.AdjustmentComparison);
     }
 
     protected static void AssertPredictionEqual(MatchPrediction expected, MatchPrediction actual)
@@ -192,6 +193,27 @@ public abstract class TestFixtures
             {
                 Content = new StringContent(content)
             });
+        }
+    }
+
+    protected static void AssertAdjustmentComparisonEqual(PredictionAdjustmentComparison? expected, PredictionAdjustmentComparison? actual)
+    {
+        Assert.Equal(expected is null, actual is null);
+        if (expected is null || actual is null)
+            return;
+
+        AssertPredictionEqual(expected.BaselinePrediction, actual.BaselinePrediction);
+        AssertPredictionEqual(expected.AdjustedPrediction, actual.AdjustedPrediction);
+        Assert.Equal(expected.BaselineMethodName, actual.BaselineMethodName);
+        Assert.Equal(expected.AdjustedMethodName, actual.AdjustedMethodName);
+        Assert.Equal(expected.Signals.Count, actual.Signals.Count);
+        for (var i = 0; i < expected.Signals.Count; i++)
+        {
+            Assert.Equal(expected.Signals[i].Name, actual.Signals[i].Name);
+            Assert.Equal(expected.Signals[i].Detail, actual.Signals[i].Detail);
+            Assert.Equal(expected.Signals[i].Applied, actual.Signals[i].Applied);
+            Assert.Equal(expected.Signals[i].Available, actual.Signals[i].Available);
+            Assert.Equal(expected.Signals[i].Modeled, actual.Signals[i].Modeled);
         }
     }
 }

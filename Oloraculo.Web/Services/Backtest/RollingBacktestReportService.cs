@@ -137,6 +137,8 @@ public sealed class RollingBacktestReportService
 
         AddOracleSelectorBreakdown(lines, report.Summaries);
         AddOracleSegmentBreakdown(lines, report.SegmentSummaries);
+        AddOracleRankingBiasBreakdown(lines, report.Summaries);
+        AddOracleRankingBiasBySegment(lines, report.SegmentSummaries);
 
         if (report.SegmentSummaries.Count > 0)
         {
@@ -253,6 +255,66 @@ public sealed class RollingBacktestReportService
             {
                 lines.Add($"| {segment.SegmentName} | {predictor} | {count} |");
             }
+        }
+    }
+
+    private static void AddOracleRankingBiasBreakdown(
+        List<string> lines,
+        IReadOnlyList<BacktestModelSummary> summaries)
+    {
+        var oracle = summaries.FirstOrDefault(summary =>
+            string.Equals(summary.ModelName, "Oráculo final", StringComparison.Ordinal));
+
+        if (oracle is null)
+            return;
+
+        var applied = oracle.RankingBiasAppliedCount;
+        var notApplied = oracle.RankingBiasNotAppliedCount;
+        var total = applied + notApplied;
+
+        if (total == 0)
+            return;
+
+        lines.Add("");
+        lines.Add("## Oráculo final — ranking bias");
+        lines.Add("Shows how often the Elo/FIFA calibration was applied vs not applied. The bias activates when both Elo and FIFA rankings agree on a different outcome than the selected predictor, blending 15% of the ranking consensus into the final probabilities.");
+        lines.Add("");
+        lines.Add("| Bias applied? | Count | Pct |");
+        lines.Add("| --- | ---: | ---: |");
+
+        var appliedPct = total > 0 ? (applied * 100.0 / total).ToString("F1", CultureInfo.InvariantCulture) : "0.0";
+        var notAppliedPct = total > 0 ? (notApplied * 100.0 / total).ToString("F1", CultureInfo.InvariantCulture) : "0.0";
+
+        lines.Add($"| Yes | {applied} | {appliedPct}% |");
+        lines.Add($"| No | {notApplied} | {notAppliedPct}% |");
+    }
+
+    private static void AddOracleRankingBiasBySegment(
+        List<string> lines,
+        IReadOnlyList<BacktestSegmentModelSummary> segmentSummaries)
+    {
+        var oracleSegments = segmentSummaries
+            .Where(s => string.Equals(s.Summary.ModelName, "Oráculo final", StringComparison.Ordinal))
+            .Where(s => s.Summary.RankingBiasAppliedCount + s.Summary.RankingBiasNotAppliedCount > 0)
+            .ToList();
+
+        if (oracleSegments.Count == 0)
+            return;
+
+        lines.Add("");
+        lines.Add("## Oráculo final — ranking bias by segment");
+        lines.Add("");
+        lines.Add("| Segment | Applied | Not applied | Applied % |");
+        lines.Add("| --- | ---: | ---: | ---: |");
+
+        foreach (var segment in oracleSegments)
+        {
+            var applied = segment.Summary.RankingBiasAppliedCount;
+            var notApplied = segment.Summary.RankingBiasNotAppliedCount;
+            var total = applied + notApplied;
+            var pct = total > 0 ? (applied * 100.0 / total).ToString("F1", CultureInfo.InvariantCulture) : "0.0";
+
+            lines.Add($"| {segment.SegmentName} | {applied} | {notApplied} | {pct}% |");
         }
     }
 

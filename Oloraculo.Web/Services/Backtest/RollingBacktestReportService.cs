@@ -140,6 +140,7 @@ public sealed class RollingBacktestReportService
         AddOracleRankingBiasBreakdown(lines, report.Summaries);
         AddOracleRankingBiasBySegment(lines, report.SegmentSummaries);
         AddOracleRankingBiasSubgroupMetrics(lines, report.Summaries);
+        AddOracleRankingBiasSubgroupMetricsBySegment(lines, report.SegmentSummaries);
 
         if (report.SegmentSummaries.Count > 0)
         {
@@ -350,6 +351,46 @@ public sealed class RollingBacktestReportService
             lines.Add(string.Create(
                 CultureInfo.InvariantCulture,
                 $"| No | {s.Count} | {s.MeanBrier:0.0000} | {s.MeanLogLoss:0.0000} | {s.MeanRps:0.0000} | {s.TopPickAccuracy:P1} |"));
+        }
+    }
+
+    private static void AddOracleRankingBiasSubgroupMetricsBySegment(
+        List<string> lines,
+        IReadOnlyList<BacktestSegmentModelSummary> segmentSummaries)
+    {
+        var oracleSegments = segmentSummaries
+            .Where(s => string.Equals(s.Summary.ModelName, "Oráculo final", StringComparison.Ordinal))
+            .Where(s => s.Summary.RankingBiasAppliedSummary is not null ||
+                        s.Summary.RankingBiasNotAppliedSummary is not null)
+            .ToList();
+
+        if (oracleSegments.Count == 0)
+            return;
+
+        lines.Add("");
+        lines.Add("## Oráculo final — ranking bias subgroup metrics by segment");
+        lines.Add("Compares separate backtest subsets where the Elo/FIFA ranking bias calibration was applied vs not applied; this is not a same-fixture counterfactual.");
+        lines.Add("");
+        lines.Add("| Segment | Ranking bias | Count | MeanBrier | MeanLogLoss | MeanRPS | TopPickAccuracy |");
+        lines.Add("| --- | --- | ---: | ---: | ---: | ---: | ---: |");
+
+        foreach (var segment in oracleSegments)
+        {
+            if (segment.Summary.RankingBiasAppliedSummary is not null)
+            {
+                var s = segment.Summary.RankingBiasAppliedSummary;
+                lines.Add(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"| {segment.SegmentName} | Yes | {s.Count} | {s.MeanBrier:0.0000} | {s.MeanLogLoss:0.0000} | {s.MeanRps:0.0000} | {s.TopPickAccuracy:P1} |"));
+            }
+
+            if (segment.Summary.RankingBiasNotAppliedSummary is not null)
+            {
+                var s = segment.Summary.RankingBiasNotAppliedSummary;
+                lines.Add(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"| {segment.SegmentName} | No | {s.Count} | {s.MeanBrier:0.0000} | {s.MeanLogLoss:0.0000} | {s.MeanRps:0.0000} | {s.TopPickAccuracy:P1} |"));
+            }
         }
     }
 

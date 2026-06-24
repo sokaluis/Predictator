@@ -1544,10 +1544,10 @@ public class RollingBacktestReportServiceTests
         Assert.Contains("## Oráculo final — chosen predictor delta vs overall (descriptive)", output);
         Assert.Contains("Delta = chosen-predictor subgroup minus Oráculo overall", output);
         Assert.Contains("descriptive only; not causal and not a same-fixture counterfactual", output);
-        Assert.Contains("| Chosen predictor | ΔMeanBrier | ΔMeanLogLoss | ΔMeanRPS | ΔTopPickAccuracy |", output);
-        Assert.Contains("| Modelo de goles (Poisson) | -0.0500 | -0.0800 | -0.0200 | +5.0 pp |", output);
-        Assert.Contains("| Elo | +0.0500 | +0.0800 | +0.0200 | -5.0 pp |", output);
-        Assert.Contains("| Goles + contexto reciente | +0.0800 | +0.1200 | +0.0400 | -10.0 pp |", output);
+        Assert.Contains("| Chosen predictor | Count | ΔMeanBrier | ΔMeanLogLoss | ΔMeanRPS | ΔTopPickAccuracy |", output);
+        Assert.Contains("| Modelo de goles (Poisson) | 3 | -0.0500 | -0.0800 | -0.0200 | +5.0 pp |", output);
+        Assert.Contains("| Elo | 2 | +0.0500 | +0.0800 | +0.0200 | -5.0 pp |", output);
+        Assert.Contains("| Goles + contexto reciente | 1 | +0.0800 | +0.1200 | +0.0400 | -10.0 pp |", output);
     }
 
     [Fact]
@@ -1598,13 +1598,13 @@ public class RollingBacktestReportServiceTests
 
         Assert.Contains("## Oráculo final — chosen predictor delta by segment (descriptive)", output);
         Assert.Contains("Delta = chosen-predictor subgroup minus that segment's Oráculo summary", output);
-        Assert.Contains("| Segment | Chosen predictor | ΔMeanBrier | ΔMeanLogLoss | ΔMeanRPS | ΔTopPickAccuracy |", output);
+        Assert.Contains("| Segment | Chosen predictor | Count | ΔMeanBrier | ΔMeanLogLoss | ΔMeanRPS | ΔTopPickAccuracy |", output);
         // Friendlies: Poisson delta = 0.3500 - 0.3800 = -0.0300
-        Assert.Contains("| Friendlies | Modelo de goles (Poisson) | -0.0300 | -0.0300 | -0.0100 | +3.0 pp |", output);
+        Assert.Contains("| Friendlies | Modelo de goles (Poisson) | 2 | -0.0300 | -0.0300 | -0.0100 | +3.0 pp |", output);
         // Friendlies: Elo delta = 0.4500 - 0.3800 = +0.0700
-        Assert.Contains("| Friendlies | Elo | +0.0700 | +0.1300 | +0.0300 | -7.0 pp |", output);
+        Assert.Contains("| Friendlies | Elo | 1 | +0.0700 | +0.1300 | +0.0300 | -7.0 pp |", output);
         // WCQ: Goles + contexto delta = 0.3200 - 0.4200 = -0.1000
-        Assert.Contains("| World Cup qualifiers | Goles + contexto reciente | -0.1000 | -0.1700 | -0.0400 | +12.0 pp |", output);
+        Assert.Contains("| World Cup qualifiers | Goles + contexto reciente | 2 | -0.1000 | -0.1700 | -0.0400 | +12.0 pp |", output);
     }
 
     [Fact]

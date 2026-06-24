@@ -339,8 +339,8 @@ public sealed class RollingBacktestReportService
         lines.Add("## Oráculo final — chosen predictor delta vs overall (descriptive)");
         lines.Add("Delta = chosen-predictor subgroup minus Oráculo overall; descriptive only; not causal and not a same-fixture counterfactual.");
         lines.Add("");
-        lines.Add("| Chosen predictor | ΔMeanBrier | ΔMeanLogLoss | ΔMeanRPS | ΔTopPickAccuracy |");
-        lines.Add("| --- | ---: | ---: | ---: | ---: |");
+        lines.Add("| Chosen predictor | Count | ΔMeanBrier | ΔMeanLogLoss | ΔMeanRPS | ΔTopPickAccuracy |");
+        lines.Add("| --- | ---: | ---: | ---: | ---: | ---: |");
 
         foreach (var (predictor, metrics) in oracle.ChosenPredictorSubgroupMetrics
             .OrderByDescending(kv => kv.Value.Count)
@@ -353,7 +353,7 @@ public sealed class RollingBacktestReportService
 
             lines.Add(string.Create(
                 CultureInfo.InvariantCulture,
-                $"| {predictor} | {deltaBrier:+0.0000;-0.0000;0.0000} | {deltaLogLoss:+0.0000;-0.0000;0.0000} | {deltaRps:+0.0000;-0.0000;0.0000} | {deltaTopPickAccuracy * 100:+0.0;-0.0;0.0} pp |"));
+                $"| {predictor} | {metrics.Count} | {deltaBrier:+0.0000;-0.0000;0.0000} | {deltaLogLoss:+0.0000;-0.0000;0.0000} | {deltaRps:+0.0000;-0.0000;0.0000} | {deltaTopPickAccuracy * 100:+0.0;-0.0;0.0} pp |"));
         }
     }
 
@@ -373,8 +373,8 @@ public sealed class RollingBacktestReportService
         lines.Add("## Oráculo final — chosen predictor delta by segment (descriptive)");
         lines.Add("Delta = chosen-predictor subgroup minus that segment's Oráculo summary; descriptive only; not causal and not a same-fixture counterfactual.");
         lines.Add("");
-        lines.Add("| Segment | Chosen predictor | ΔMeanBrier | ΔMeanLogLoss | ΔMeanRPS | ΔTopPickAccuracy |");
-        lines.Add("| --- | --- | ---: | ---: | ---: | ---: |");
+        lines.Add("| Segment | Chosen predictor | Count | ΔMeanBrier | ΔMeanLogLoss | ΔMeanRPS | ΔTopPickAccuracy |");
+        lines.Add("| --- | --- | ---: | ---: | ---: | ---: | ---: |");
 
         foreach (var segment in oracleSegments)
         {
@@ -391,7 +391,7 @@ public sealed class RollingBacktestReportService
 
                 lines.Add(string.Create(
                     CultureInfo.InvariantCulture,
-                    $"| {segment.SegmentName} | {predictor} | {deltaBrier:+0.0000;-0.0000;0.0000} | {deltaLogLoss:+0.0000;-0.0000;0.0000} | {deltaRps:+0.0000;-0.0000;0.0000} | {deltaTopPickAccuracy * 100:+0.0;-0.0;0.0} pp |"));
+                    $"| {segment.SegmentName} | {predictor} | {metrics.Count} | {deltaBrier:+0.0000;-0.0000;0.0000} | {deltaLogLoss:+0.0000;-0.0000;0.0000} | {deltaRps:+0.0000;-0.0000;0.0000} | {deltaTopPickAccuracy * 100:+0.0;-0.0;0.0} pp |"));
             }
         }
     }

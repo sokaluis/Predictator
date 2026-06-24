@@ -51,6 +51,33 @@ public class EvaluationServiceTests : TestFixtures
     }
 
     [Fact]
+    public async Task Evaluation_UsesSnapshotModelNameForContextAdjustedIdentity()
+    {
+        await using var db = await NewDb();
+        var fixture = new Fixture { Id = "f1", Group = "A", HomeTeamId = "a", AwayTeamId = "b" };
+        db.Teams.AddRange(new Team { Id = "a", Name = "A" }, new Team { Id = "b", Name = "B" });
+        db.Fixtures.Add(fixture);
+        db.Snapshots.Add(new PredictionSnapshot
+        {
+            Kind = "match",
+            FixtureId = "f1",
+            ModelName = MatchPrediction.ContextAdjustedPredictionIdentity,
+            InputSummaryHash = "hash",
+            PayloadJson = "{}",
+            Explanation = "test",
+            HomeWin = .6,
+            Draw = .2,
+            AwayWin = .2
+        });
+        await db.SaveChangesAsync();
+
+        await new EvaluationService(db).EvaluateLatestSnapshotAsync(fixture, 2, 1);
+
+        var evaluation = Assert.Single(await db.Evaluations.ToListAsync());
+        Assert.Equal(MatchPrediction.ContextAdjustedPredictionIdentity, evaluation.ModelName);
+    }
+
+    [Fact]
     public async Task Evaluation_BulkEvaluatesPlayedFixturesWithPriorSnapshots()
     {
         await using var db = await NewDb();

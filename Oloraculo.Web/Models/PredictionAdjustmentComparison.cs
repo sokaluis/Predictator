@@ -13,14 +13,21 @@ namespace Oloraculo.Web.Models
         public string BaselinePick => BaselinePrediction.Outcome.TopPick;
         public string AdjustedPick => AdjustedPrediction.Outcome.TopPick;
         public bool PickChanged => !string.Equals(BaselinePick, AdjustedPick, StringComparison.Ordinal);
+        public bool HasModeledSignal => Signals.Any(signal => signal.Modeled);
+        public bool HasAppliedModeledSignal => Signals.Any(signal => signal.Modeled && signal.Applied);
         public bool HasExpectedGoalsDelta =>
             Math.Abs(HomeExpectedGoalsDelta ?? 0) >= 0.005 ||
             Math.Abs(AwayExpectedGoalsDelta ?? 0) >= 0.005;
+        public bool HasConfidenceDelta => Math.Abs(Confidence(AdjustedPrediction) - Confidence(BaselinePrediction)) >= 0.005;
+        public bool HasModeledContextEffect => HasAppliedModeledSignal && (HasExpectedGoalsDelta || PickChanged || HasConfidenceDelta);
 
         private static double? Delta(double? adjusted, double? baseline) =>
             adjusted.HasValue && baseline.HasValue
                 ? Math.Round(adjusted.Value - baseline.Value, 2)
                 : null;
+
+        private static double Confidence(MatchPrediction prediction) =>
+            Math.Max(prediction.Outcome.HomeWin, Math.Max(prediction.Outcome.Draw, prediction.Outcome.AwayWin));
     }
 
     public sealed class PredictionAdjustmentSignal

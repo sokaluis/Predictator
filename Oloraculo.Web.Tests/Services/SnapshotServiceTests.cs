@@ -102,6 +102,49 @@ public class SnapshotServiceTests : TestFixtures
     }
 
     [Fact]
+    public async Task SnapshotService_SavesFullFixtureBatchWithEffectiveModelName()
+    {
+        await using var db = await NewDb();
+        var service = new SnapshotService(db);
+        var directPrediction = Prediction(4, "Oráculo final", .6, .2, .2);
+        directPrediction.FixtureId = "f1";
+        directPrediction.PredictionIdentity = MatchPrediction.ContextAdjustedPredictionIdentity;
+        var resultPrediction = Prediction(4, "Oráculo final", .2, .3, .5);
+        resultPrediction.FixtureId = "f2";
+        resultPrediction.PredictionIdentity = MatchPrediction.ContextAdjustedPredictionIdentity;
+        var result = new MatchPredictionResult
+        {
+            Fixture = new Fixture { Id = "f2", HomeTeamId = "a", AwayTeamId = "b" },
+            HomeTeamName = "A",
+            AwayTeamName = "B",
+            Predictions = [resultPrediction],
+            BestPrediction = resultPrediction
+        };
+
+        var directBatch = await service.SaveFullFixtureAsync([directPrediction]);
+        var resultBatch = await service.SaveFullFixtureAsync([result]);
+
+        Assert.Equal(MatchPrediction.ContextAdjustedPredictionIdentity, directBatch.ModelName);
+        Assert.Equal(MatchPrediction.ContextAdjustedPredictionIdentity, resultBatch.ModelName);
+    }
+
+    [Fact]
+    public async Task SnapshotService_SavesMixedFullFixtureBatchWithGenericModelName()
+    {
+        await using var db = await NewDb();
+        var service = new SnapshotService(db);
+        var adjusted = Prediction(4, "Oráculo final", .6, .2, .2);
+        adjusted.FixtureId = "f1";
+        adjusted.PredictionIdentity = MatchPrediction.ContextAdjustedPredictionIdentity;
+        var plain = Prediction(4, "Oráculo final", .2, .3, .5);
+        plain.FixtureId = "f2";
+
+        var batch = await service.SaveFullFixtureAsync([adjusted, plain]);
+
+        Assert.Equal("Fixture completo", batch.ModelName);
+    }
+
+    [Fact]
     public async Task SnapshotService_LoadsFullFixtureBatchAsPredictionResults()
     {
         await using var db = await NewDb();
@@ -201,6 +244,8 @@ public class SnapshotServiceTests : TestFixtures
         var loaded = await service.LoadMatchSnapshotAsync(snapshot.Id);
 
         Assert.True(loaded.IsValid);
+        Assert.Equal("Final + context", snapshot.ModelName);
+        Assert.Null(loaded.Prediction!.BestPrediction.PredictionIdentity);
         var comparison = Assert.IsType<PredictionAdjustmentComparison>(loaded.Prediction!.AdjustmentComparison);
         Assert.Equal("Final", comparison.BaselineMethodName);
         Assert.Equal("Final + API Pro context", comparison.AdjustedMethodName);
@@ -297,7 +342,55 @@ public class SnapshotServiceTests : TestFixtures
         Assert.Equal("Legacy", loaded.Prediction!.BestPrediction.PredictorName);
         Assert.Equal("a", loaded.Prediction.BestPrediction.HomeTeamId);
         Assert.Equal(.6, loaded.Prediction.BestPrediction.Outcome.HomeWin);
+        Assert.Null(loaded.Prediction.BestPrediction.PredictionIdentity);
         Assert.Null(loaded.Prediction.AdjustmentComparison);
+    }
+
+    [Fact]
+    public async Task SnapshotService_PreservesContextAdjustedIdentityWhenLoadingMatchSnapshot()
+    {
+        await using var db = await NewDb();
+        db.Teams.AddRange(new Team { Id = "a", Name = "A" }, new Team { Id = "b", Name = "B" });
+        db.Fixtures.Add(new Fixture { Id = "f1", Group = "A", HomeTeamId = "a", AwayTeamId = "b" });
+        await db.SaveChangesAsync();
+        var baseline = Prediction(4, "Oráculo final", .45, .35, .20);
+        baseline.FixtureId = "f1";
+        baseline.ExpectedHomeGoals = 1.1;
+        baseline.ExpectedAwayGoals = .8;
+        var adjusted = Prediction(4, "Oráculo final", .30, .25, .45);
+        adjusted.FixtureId = "f1";
+        adjusted.PredictionIdentity = MatchPrediction.ContextAdjustedPredictionIdentity;
+        adjusted.ExpectedHomeGoals = .9;
+        adjusted.ExpectedAwayGoals = 1.2;
+        var result = new MatchPredictionResult
+        {
+            Fixture = new Fixture { Id = "f1", HomeTeamId = "a", AwayTeamId = "b" },
+            HomeTeamName = "A",
+            AwayTeamName = "B",
+            Predictions = [adjusted],
+            BestPrediction = adjusted,
+            AdjustmentComparison = new PredictionAdjustmentComparison
+            {
+                BaselinePrediction = baseline,
+                AdjustedPrediction = adjusted,
+                BaselineMethodName = "Modelo de goles (Poisson)",
+                AdjustedMethodName = "Goles + contexto reciente",
+                Signals =
+                [
+                    new PredictionAdjustmentSignal { Name = "Disponibilidad de jugadores", Detail = "Modeled player availability", Applied = true, Available = true, Modeled = true }
+                ]
+            }
+        };
+        var service = new SnapshotService(db);
+
+        var snapshot = await service.SaveMatchAsync(result);
+        var loaded = await service.LoadMatchSnapshotAsync(snapshot.Id);
+
+        Assert.Equal(MatchPrediction.ContextAdjustedPredictionIdentity, snapshot.ModelName);
+        Assert.True(loaded.IsValid);
+        Assert.Equal(MatchPrediction.ContextAdjustedPredictionIdentity, loaded.Prediction!.BestPrediction.PredictionIdentity);
+        Assert.True(loaded.Prediction.BestPrediction.IsContextAdjusted);
+        Assert.True(loaded.Prediction.AdjustmentComparison!.HasModeledContextEffect);
     }
 
     [Fact]

@@ -56,6 +56,10 @@ namespace Oloraculo.Web.Services
             var baselineLadder = predictors.Select(p => p.Predict(baselineContext)).ToList();
             var baselineBest = FinalPredictionSelector.Select(baselineLadder);
 
+            var adjustmentComparison = BuildAdjustmentComparison(context, baselineBest, best);
+            if (adjustmentComparison?.HasModeledContextEffect == true)
+                best.PredictionIdentity = MatchPrediction.ContextAdjustedPredictionIdentity;
+
             return new MatchPredictionResult
             {
                 Fixture = fixture,
@@ -64,7 +68,7 @@ namespace Oloraculo.Web.Services
                 Predictions = ladder,
                 BestPrediction = best,
                 Criteria = PredictionCriteriaBuilder.Build(context, ladder, best),
-                AdjustmentComparison = BuildAdjustmentComparison(context, baselineBest, best)
+                AdjustmentComparison = adjustmentComparison
             };
         }
 

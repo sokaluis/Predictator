@@ -964,6 +964,73 @@ public class RollingBacktestServiceTests
         Assert.True(point.Prediction.Outcome.HomeWin + point.Prediction.Outcome.Draw + point.Prediction.Outcome.AwayWin > 0.999);
     }
 
+    [Fact]
+    public void Compare_OracleFinalRankingBiasCountsSumToOracleEvaluationCount()
+    {
+        var targetDate = DateTimeOffset.Parse("2024-01-03T00:00:00Z");
+        var provider = new InMemoryBacktestRatingSnapshotProvider(
+        [
+            Rating("a", RatingTypeEnum.Elo, 1500, targetDate.AddDays(-1)),
+            Rating("b", RatingTypeEnum.Elo, 1400, targetDate.AddDays(-1)),
+            Rating("a", RatingTypeEnum.Fifa, 1600, targetDate.AddDays(-1)),
+            Rating("b", RatingTypeEnum.Fifa, 1300, targetDate.AddDays(-1))
+        ]);
+        var results = RatingGatedResults();
+
+        var comparison = new RollingBacktestService(provider).Compare(results, minimumPriorMatchesPerTeam: 1);
+
+        var oracleSummary = comparison.Summaries.Single(summary => summary.ModelName == "Oráculo final");
+        Assert.Equal(1, oracleSummary.Count);
+        Assert.Equal(oracleSummary.Count, oracleSummary.RankingBiasAppliedCount + oracleSummary.RankingBiasNotAppliedCount);
+    }
+
+    [Fact]
+    public void Compare_NonOracleSummariesHaveZeroRankingBiasCounts()
+    {
+        var results = new[]
+        {
+            Result("first", "c", "a", "2024-01-01", 1, 1),
+            Result("second", "b", "c", "2024-01-02", 2, 0),
+            Result("target", "a", "b", "2024-01-03", 1, 0)
+        };
+
+        var comparison = new RollingBacktestService().Compare(results, minimumPriorMatchesPerTeam: 1);
+
+        foreach (var summary in comparison.Summaries.Where(s => s.ModelName != "Oráculo final"))
+        {
+            Assert.Equal(0, summary.RankingBiasAppliedCount);
+            Assert.Equal(0, summary.RankingBiasNotAppliedCount);
+        }
+    }
+
+    [Fact]
+    public void Compare_SegmentOracleSummariesIncludeRankingBiasCounts()
+    {
+        var targetDate = DateTimeOffset.Parse("2024-01-03T00:00:00Z");
+        var provider = new InMemoryBacktestRatingSnapshotProvider(
+        [
+            Rating("a", RatingTypeEnum.Elo, 1500, targetDate.AddDays(-1)),
+            Rating("b", RatingTypeEnum.Elo, 1400, targetDate.AddDays(-1)),
+            Rating("a", RatingTypeEnum.Fifa, 1600, targetDate.AddDays(-1)),
+            Rating("b", RatingTypeEnum.Fifa, 1300, targetDate.AddDays(-1))
+        ]);
+        var results = RatingGatedResults();
+
+        var comparison = new RollingBacktestService(provider).Compare(results, minimumPriorMatchesPerTeam: 1);
+
+        Assert.NotEmpty(comparison.SegmentSummaries);
+        var oracleSegments = comparison.SegmentSummaries
+            .Where(s => s.Summary.ModelName == "Oráculo final")
+            .ToList();
+        Assert.NotEmpty(oracleSegments);
+
+        foreach (var segment in oracleSegments)
+        {
+            Assert.Equal(segment.Summary.Count,
+                segment.Summary.RankingBiasAppliedCount + segment.Summary.RankingBiasNotAppliedCount);
+        }
+    }
+
     private static MatchResult Result(
         string id,
         string homeTeamId,

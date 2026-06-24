@@ -230,8 +230,13 @@ public sealed class RollingBacktestService
     private static BacktestPredictionEvaluation ToBacktestEvaluation(MatchResult target, MatchPrediction prediction) =>
         new(ToEvaluation(target, prediction), prediction.Degraded, NormalizeDegradedReasons(prediction))
         {
-            ChosenPredictorName = ExtractChosenPredictorName(prediction)
+            ChosenPredictorName = ExtractChosenPredictorName(prediction),
+            RankingBiasApplied = HasRankingBiasApplied(prediction)
         };
+
+    private static bool HasRankingBiasApplied(MatchPrediction prediction) =>
+        string.Equals(prediction.PredictorName, "Oráculo final", StringComparison.Ordinal) &&
+        prediction.Drivers.Any(d => d.Contains("Aplicó una calibración Elo/FIFA", StringComparison.Ordinal));
 
     private static IReadOnlyList<string> NormalizeDegradedReasons(MatchPrediction prediction)
     {
@@ -314,6 +319,11 @@ public sealed class RollingBacktestService
                     .GroupBy(evaluation => evaluation.ChosenPredictorName!, StringComparer.Ordinal)
                     .ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal);
 
+                var biasAppliedCount = group.Count(evaluation => evaluation.RankingBiasApplied);
+                var biasNotAppliedCount = group.Count(evaluation =>
+                    string.Equals(evaluation.Evaluation.ModelName, "Oráculo final", StringComparison.Ordinal) &&
+                    !evaluation.RankingBiasApplied);
+
                 return new BacktestModelSummary(
                     group.Key,
                     count,
@@ -325,7 +335,9 @@ public sealed class RollingBacktestService
                     SignalBackedCount = signalBacked,
                     DegradedCount = degraded,
                     DegradedReasonCounts = reasonCounts,
-                    ChosenPredictorCounts = chosenPredictorCounts
+                    ChosenPredictorCounts = chosenPredictorCounts,
+                    RankingBiasAppliedCount = biasAppliedCount,
+                    RankingBiasNotAppliedCount = biasNotAppliedCount
                 };
             })
             .OrderBy(summary => summary.MeanBrier)
@@ -531,6 +543,9 @@ public sealed record BacktestModelSummary(
     public IReadOnlyDictionary<string, int> ChosenPredictorCounts { get; init; } =
         new Dictionary<string, int>();
 
+    public int RankingBiasAppliedCount { get; init; }
+    public int RankingBiasNotAppliedCount { get; init; }
+
     public double ReadinessPct => Count > 0 ? SignalBackedCount * 100.0 / Count : 100.0;
 
     public bool IsRatingDependent =>
@@ -543,6 +558,7 @@ internal sealed record BacktestPredictionEvaluation(
     IReadOnlyList<string> DegradedReasons)
 {
     public string? ChosenPredictorName { get; init; }
+    public bool RankingBiasApplied { get; init; }
 }
 
 public sealed record BacktestSegmentModelSummary(

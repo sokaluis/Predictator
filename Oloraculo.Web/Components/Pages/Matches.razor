@@ -374,7 +374,7 @@
         _saving = true;
         try
         {
-            var snapshot = await Snapshots.SaveMatchAsync(_result.BestPrediction);
+            var snapshot = await Snapshots.SaveMatchAsync(_result);
             _saved = true;
             _activeMatchSnapshotId = snapshot.Id;
             await RefreshMatchSnapshotsForSelected();

@@ -258,7 +258,7 @@
         _error = "";
         try
         {
-            var snapshot = await Snapshots.SaveFullFixtureAsync(OrderedPredictionResults().Select(result => result.BestPrediction));
+            var snapshot = await Snapshots.SaveFullFixtureAsync(OrderedPredictionResults());
             _savedCount = _predictions.Count;
             _activeFullFixtureSnapshotId = snapshot.Id;
             await RefreshFullFixtureSnapshots();

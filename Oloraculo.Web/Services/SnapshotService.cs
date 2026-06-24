@@ -27,7 +27,16 @@ namespace Oloraculo.Web.Services
         public async Task<PredictionSnapshot> SaveMatchAsync(MatchPrediction prediction, CancellationToken ct = default)
         {
             await EnsureSnapshotColumnsAsync(ct);
-            var snapshot = CreateMatchSnapshot(prediction, DateTimeOffset.UtcNow, batchId: null);
+            var snapshot = CreateMatchSnapshot(prediction, DateTimeOffset.UtcNow, batchId: null, adjustmentComparison: null);
+            _db.Snapshots.Add(snapshot);
+            await _db.SaveChangesAsync(ct);
+            return snapshot;
+        }
+
+        public async Task<PredictionSnapshot> SaveMatchAsync(MatchPredictionResult result, CancellationToken ct = default)
+        {
+            await EnsureSnapshotColumnsAsync(ct);
+            var snapshot = CreateMatchSnapshot(result.BestPrediction, DateTimeOffset.UtcNow, batchId: null, result.AdjustmentComparison);
             _db.Snapshots.Add(snapshot);
             await _db.SaveChangesAsync(ct);
             return snapshot;
@@ -37,7 +46,17 @@ namespace Oloraculo.Web.Services
         {
             await EnsureSnapshotColumnsAsync(ct);
             var now = DateTimeOffset.UtcNow;
-            var snapshots = predictions.Select(prediction => CreateMatchSnapshot(prediction, now, batchId: null)).ToList();
+            var snapshots = predictions.Select(prediction => CreateMatchSnapshot(prediction, now, batchId: null, adjustmentComparison: null)).ToList();
+            _db.Snapshots.AddRange(snapshots);
+            await _db.SaveChangesAsync(ct);
+            return snapshots;
+        }
+
+        public async Task<IReadOnlyList<PredictionSnapshot>> SaveMatchesAsync(IEnumerable<MatchPredictionResult> results, CancellationToken ct = default)
+        {
+            await EnsureSnapshotColumnsAsync(ct);
+            var now = DateTimeOffset.UtcNow;
+            var snapshots = results.Select(result => CreateMatchSnapshot(result.BestPrediction, now, batchId: null, result.AdjustmentComparison)).ToList();
             _db.Snapshots.AddRange(snapshots);
             await _db.SaveChangesAsync(ct);
             return snapshots;
@@ -83,7 +102,7 @@ namespace Oloraculo.Web.Services
             await _db.SaveChangesAsync(ct);
 
             var matchSnapshots = predictionList
-                .Select(prediction => CreateMatchSnapshot(prediction, now, batch.Id))
+                .Select(prediction => CreateMatchSnapshot(prediction, now, batch.Id, adjustmentComparison: null))
                 .ToList();
 
             _db.Snapshots.AddRange(matchSnapshots);
@@ -93,7 +112,62 @@ namespace Oloraculo.Web.Services
             return batch;
         }
 
-        private static PredictionSnapshot CreateMatchSnapshot(MatchPrediction prediction, DateTimeOffset createdAt, int? batchId)
+        public async Task<PredictionSnapshot> SaveFullFixtureAsync(IEnumerable<MatchPredictionResult> results, CancellationToken ct = default)
+        {
+            await EnsureSnapshotColumnsAsync(ct);
+            var resultList = results.ToList();
+            if (resultList.Count == 0)
+                throw new InvalidOperationException("No hay predicciones para guardar.");
+
+            var predictionList = resultList.Select(result => result.BestPrediction).ToList();
+            var fixtureIds = predictionList.Select(p => p.FixtureId).ToList();
+            if (fixtureIds.Any(string.IsNullOrWhiteSpace))
+                throw new InvalidOperationException("Todas las predicciones deben tener fixture.");
+            if (fixtureIds.Distinct(StringComparer.Ordinal).Count() != fixtureIds.Count)
+                throw new InvalidOperationException("No se puede guardar un fixture completo con partidos duplicados.");
+
+            var now = DateTimeOffset.UtcNow;
+            var modelName = predictionList.Select(p => p.PredictorName).Distinct(StringComparer.Ordinal).SingleOrDefault() ?? "Fixture completo";
+            var payload = JsonSerializer.Serialize(new FullFixtureSnapshotPayload
+            {
+                SavedAt = now,
+                FixtureIds = fixtureIds,
+                Count = predictionList.Count
+            }, JsonOptions);
+
+            await using var transaction = await _db.Database.BeginTransactionAsync(ct);
+            var batch = new PredictionSnapshot
+            {
+                Kind = FullFixtureKind,
+                ModelName = modelName,
+                CreatedAt = now,
+                InputSummaryHash = CryptoUtil.GetSha256($"full-fixture|{now:O}|{string.Join("|", fixtureIds)}"),
+                PayloadJson = payload,
+                Explanation = $"{predictionList.Count} predicciones de fixture guardadas como lote.",
+                HomeWin = 0,
+                Draw = 0,
+                AwayWin = 0
+            };
+
+            _db.Snapshots.Add(batch);
+            await _db.SaveChangesAsync(ct);
+
+            var matchSnapshots = resultList
+                .Select(result => CreateMatchSnapshot(result.BestPrediction, now, batch.Id, result.AdjustmentComparison))
+                .ToList();
+
+            _db.Snapshots.AddRange(matchSnapshots);
+            await _db.SaveChangesAsync(ct);
+            await transaction.CommitAsync(ct);
+
+            return batch;
+        }
+
+        private static PredictionSnapshot CreateMatchSnapshot(
+            MatchPrediction prediction,
+            DateTimeOffset createdAt,
+            int? batchId,
+            PredictionAdjustmentComparison? adjustmentComparison)
         {
             var payload = JsonSerializer.Serialize(new
             {
@@ -111,7 +185,8 @@ namespace Oloraculo.Web.Services
                 prediction.FeaturesMissing,
                 prediction.Drivers,
                 prediction.Sources,
-                prediction.Degraded
+                prediction.Degraded,
+                AdjustmentComparison = ToAdjustmentComparisonPayload(adjustmentComparison)
             }, JsonOptions);
 
             return new PredictionSnapshot
@@ -370,7 +445,8 @@ namespace Oloraculo.Web.Services
                 HomeTeamName = await TeamNameAsync(homeTeamId, ct),
                 AwayTeamName = await TeamNameAsync(awayTeamId, ct),
                 Predictions = [prediction],
-                BestPrediction = prediction
+                BestPrediction = prediction,
+                AdjustmentComparison = stored.AdjustmentComparison
             };
 
             return new MatchSnapshotLoadResult(result, null);
@@ -499,13 +575,129 @@ namespace Oloraculo.Web.Services
                     FeaturesMissing = ReadStringList(root, "FeaturesMissing"),
                     Drivers = ReadStringList(root, "Drivers"),
                     Sources = ReadSources(root, "Sources"),
-                    Degraded = ReadBool(root, "Degraded")
+                    Degraded = ReadBool(root, "Degraded"),
+                    AdjustmentComparison = ReadAdjustmentComparison(root)
                 };
             }
             catch (JsonException)
             {
                 return new StoredMatchPrediction();
             }
+        }
+
+        private static object? ToAdjustmentComparisonPayload(PredictionAdjustmentComparison? comparison) =>
+            comparison is null
+                ? null
+                : new
+                {
+                    BaselinePrediction = ToPredictionPayload(comparison.BaselinePrediction),
+                    AdjustedPrediction = ToPredictionPayload(comparison.AdjustedPrediction),
+                    comparison.BaselineMethodName,
+                    comparison.AdjustedMethodName,
+                    comparison.Signals
+                };
+
+        private static object ToPredictionPayload(MatchPrediction prediction) => new
+        {
+            prediction.PredictorName,
+            prediction.PredictorPriority,
+            prediction.FixtureId,
+            prediction.HomeTeamId,
+            prediction.AwayTeamId,
+            Outcome = prediction.Outcome,
+            prediction.ExpectedHomeGoals,
+            prediction.ExpectedAwayGoals,
+            MostLikelyScore = prediction.MostLikelyScore is null ? null : new ScorePayload(prediction.MostLikelyScore.Value.Home, prediction.MostLikelyScore.Value.Away),
+            prediction.Explanation,
+            prediction.FeaturesUsed,
+            prediction.FeaturesMissing,
+            prediction.Drivers,
+            prediction.Sources,
+            prediction.Degraded
+        };
+
+        private static PredictionAdjustmentComparison? ReadAdjustmentComparison(JsonElement root)
+        {
+            if (!TryGetProperty(root, "AdjustmentComparison", out var element) || element.ValueKind != JsonValueKind.Object)
+                return null;
+
+            if (!TryGetProperty(element, "BaselinePrediction", out var baselineElement) ||
+                !TryGetProperty(element, "AdjustedPrediction", out var adjustedElement))
+                return null;
+
+            var baseline = ReadMatchPrediction(baselineElement);
+            var adjusted = ReadMatchPrediction(adjustedElement);
+            var baselineMethod = ReadString(element, "BaselineMethodName");
+            var adjustedMethod = ReadString(element, "AdjustedMethodName");
+            if (baseline is null || adjusted is null || string.IsNullOrWhiteSpace(baselineMethod) || string.IsNullOrWhiteSpace(adjustedMethod))
+                return null;
+
+            return new PredictionAdjustmentComparison
+            {
+                BaselinePrediction = baseline,
+                AdjustedPrediction = adjusted,
+                BaselineMethodName = baselineMethod,
+                AdjustedMethodName = adjustedMethod,
+                Signals = ReadAdjustmentSignals(element)
+            };
+        }
+
+        private static MatchPrediction? ReadMatchPrediction(JsonElement element)
+        {
+            if (element.ValueKind != JsonValueKind.Object)
+                return null;
+
+            var outcome = ReadOutcome(element);
+            if (outcome is null)
+                return null;
+
+            return new MatchPrediction
+            {
+                PredictorName = ReadString(element, "PredictorName") ?? "Snapshot",
+                PredictorPriority = ReadInt(element, "PredictorPriority") ?? 0,
+                FixtureId = ReadString(element, "FixtureId") ?? "",
+                HomeTeamId = ReadString(element, "HomeTeamId") ?? "",
+                AwayTeamId = ReadString(element, "AwayTeamId") ?? "",
+                Outcome = outcome.Value,
+                ExpectedHomeGoals = ReadDouble(element, "ExpectedHomeGoals"),
+                ExpectedAwayGoals = ReadDouble(element, "ExpectedAwayGoals"),
+                MostLikelyScore = ReadScore(element, "MostLikelyScore"),
+                Explanation = ReadString(element, "Explanation") ?? "",
+                FeaturesUsed = ReadStringList(element, "FeaturesUsed") ?? [],
+                FeaturesMissing = ReadStringList(element, "FeaturesMissing") ?? [],
+                Drivers = ReadStringList(element, "Drivers") ?? [],
+                Sources = ReadSources(element, "Sources") ?? [],
+                Degraded = ReadBool(element, "Degraded") ?? false
+            };
+        }
+
+        private static IReadOnlyList<PredictionAdjustmentSignal> ReadAdjustmentSignals(JsonElement root)
+        {
+            if (!TryGetProperty(root, "Signals", out var element) || element.ValueKind != JsonValueKind.Array)
+                return [];
+
+            var signals = new List<PredictionAdjustmentSignal>();
+            foreach (var item in element.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object)
+                    continue;
+
+                var name = ReadString(item, "Name");
+                var detail = ReadString(item, "Detail");
+                if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(detail))
+                    continue;
+
+                signals.Add(new PredictionAdjustmentSignal
+                {
+                    Name = name,
+                    Detail = detail,
+                    Applied = ReadBool(item, "Applied") ?? false,
+                    Available = ReadBool(item, "Available") ?? false,
+                    Modeled = ReadBool(item, "Modeled") ?? false
+                });
+            }
+
+            return signals;
         }
 
         private static OutcomeProbabilities? SnapshotOutcome(PredictionSnapshot snapshot)
@@ -748,6 +940,7 @@ namespace Oloraculo.Web.Services
             public IReadOnlyList<string>? Drivers { get; init; }
             public IReadOnlyList<SourceMetadata>? Sources { get; init; }
             public bool? Degraded { get; init; }
+            public PredictionAdjustmentComparison? AdjustmentComparison { get; init; }
         }
     }
 }

@@ -161,6 +161,60 @@ public class SnapshotServiceTests : TestFixtures
     }
 
     [Fact]
+    public async Task SnapshotService_PreservesAdjustmentComparisonWhenLoadingMatchSnapshot()
+    {
+        await using var db = await NewDb();
+        db.Teams.AddRange(new Team { Id = "a", Name = "A" }, new Team { Id = "b", Name = "B" });
+        db.Fixtures.Add(new Fixture { Id = "f1", Group = "A", HomeTeamId = "a", AwayTeamId = "b" });
+        await db.SaveChangesAsync();
+        var baseline = Prediction(4, "Final", .45, .35, .20);
+        baseline.FixtureId = "f1";
+        baseline.ExpectedHomeGoals = 1.1;
+        baseline.ExpectedAwayGoals = .8;
+        var adjusted = Prediction(4, "Final + context", .30, .25, .45);
+        adjusted.FixtureId = "f1";
+        adjusted.ExpectedHomeGoals = .9;
+        adjusted.ExpectedAwayGoals = 1.2;
+        var result = new MatchPredictionResult
+        {
+            Fixture = new Fixture { Id = "f1", HomeTeamId = "a", AwayTeamId = "b" },
+            HomeTeamName = "A",
+            AwayTeamName = "B",
+            Predictions = [adjusted],
+            BestPrediction = adjusted,
+            AdjustmentComparison = new PredictionAdjustmentComparison
+            {
+                BaselinePrediction = baseline,
+                AdjustedPrediction = adjusted,
+                BaselineMethodName = "Final",
+                AdjustedMethodName = "Final + API Pro context",
+                Signals =
+                [
+                    new PredictionAdjustmentSignal { Name = "Lineups", Detail = "Available but not modeled", Available = true, Modeled = false },
+                    new PredictionAdjustmentSignal { Name = "Odds", Detail = "Available but not modeled", Available = true, Modeled = false }
+                ]
+            }
+        };
+        var service = new SnapshotService(db);
+
+        var snapshot = await service.SaveMatchAsync(result);
+        var loaded = await service.LoadMatchSnapshotAsync(snapshot.Id);
+
+        Assert.True(loaded.IsValid);
+        var comparison = Assert.IsType<PredictionAdjustmentComparison>(loaded.Prediction!.AdjustmentComparison);
+        Assert.Equal("Final", comparison.BaselineMethodName);
+        Assert.Equal("Final + API Pro context", comparison.AdjustedMethodName);
+        Assert.Equal(-.2, comparison.HomeExpectedGoalsDelta);
+        Assert.Equal(.4, comparison.AwayExpectedGoalsDelta);
+        Assert.True(comparison.PickChanged);
+        Assert.Equal("Home", comparison.BaselinePick);
+        Assert.Equal("Away", comparison.AdjustedPick);
+        Assert.Equal(new[] { "Lineups", "Odds" }, comparison.Signals.Select(signal => signal.Name));
+        Assert.All(comparison.Signals, signal => Assert.True(signal.Available));
+        Assert.All(comparison.Signals, signal => Assert.False(signal.Modeled));
+    }
+
+    [Fact]
     public async Task SnapshotService_LoadsLatestMatchSnapshotAtOrBeforeCutoff()
     {
         await using var db = await NewDb();
@@ -243,6 +297,7 @@ public class SnapshotServiceTests : TestFixtures
         Assert.Equal("Legacy", loaded.Prediction!.BestPrediction.PredictorName);
         Assert.Equal("a", loaded.Prediction.BestPrediction.HomeTeamId);
         Assert.Equal(.6, loaded.Prediction.BestPrediction.Outcome.HomeWin);
+        Assert.Null(loaded.Prediction.AdjustmentComparison);
     }
 
     [Fact]

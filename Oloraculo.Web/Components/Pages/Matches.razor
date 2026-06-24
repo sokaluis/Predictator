@@ -59,6 +59,28 @@
                                 {
                                     <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Outlined">@fixture.HomeGoals-@fixture.AwayGoals</MudChip>
                                 }
+                                @if (_snapshotChips.TryGetValue(fixture.Id, out var chip))
+                                {
+                                    @if (chip.ScoreText is not null)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Outlined">Pred. @chip.ScoreText</MudChip>
+                                    }
+                                    else
+                                    {
+                                        var pickName = chip.TopPick switch
+                                        {
+                                            "Home" => Name(fixture.HomeTeamId),
+                                            "Draw" => "Empate",
+                                            "Away" => Name(fixture.AwayTeamId),
+                                            _ => ""
+                                        };
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Outlined">Pred. @pickName</MudChip>
+                                    }
+                                    @if (chip.IsContextAdjusted)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Secondary" Variant="Variant.Outlined">API/contexto</MudChip>
+                                    }
+                                }
                             </div>
                         }
                     }
@@ -217,6 +239,7 @@
     private Fixture? _selected;
     private MatchPredictionResult? _result;
     private IReadOnlyList<MatchSnapshotSummary> _matchSnapshots = [];
+    private IReadOnlyDictionary<string, MatchSnapshotChip> _snapshotChips = new Dictionary<string, MatchSnapshotChip>();
     private List<AvailabilityClaim> _availabilityClaims = [];
     private bool _loaded;
     private bool _busy;
@@ -238,6 +261,7 @@
     {
         await LoadFixtures();
         _names = await Db.Teams.ToDictionaryAsync(t => t.Id, t => t.Name);
+        _snapshotChips = await Snapshots.MatchSnapshotChipsAsync();
         _loaded = true;
     }
 
@@ -378,6 +402,7 @@
             _saved = true;
             _activeMatchSnapshotId = snapshot.Id;
             await RefreshMatchSnapshotsForSelected();
+            _snapshotChips = await Snapshots.MatchSnapshotChipsAsync();
             _selectedMatchSnapshotId = snapshot.Id;
             _resultSource = $"Snapshot guardado {snapshot.CreatedAt.ToLocalTime():g}";
             Snackbar.Add("Snapshot de predicción guardado.", Severity.Success);

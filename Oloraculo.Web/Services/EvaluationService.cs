@@ -14,52 +14,88 @@ namespace Oloraculo.Web.Services
 
         public async Task<int> EvaluateLatestSnapshotAsync(Fixture fixture, int homeGoals, int awayGoals, CancellationToken ct = default)
         {
-            var snapshot = (await _db.Snapshots
-                .Where(s => s.Kind == "match" && s.FixtureId == fixture.Id && s.HomeWin.HasValue)
+            var snapshots = (await _db.Snapshots
+                .Where(s => s.Kind == "match"
+                    && s.FixtureId == fixture.Id
+                    && s.HomeWin.HasValue
+                    && s.Draw.HasValue
+                    && s.AwayWin.HasValue)
                 .ToListAsync(ct))
-                .OrderByDescending(s => s.CreatedAt)
-                .FirstOrDefault();
-            if (snapshot is null || snapshot.HomeWin is null || snapshot.Draw is null || snapshot.AwayWin is null)
+                .GroupBy(s => s.ModelName)
+                .Select(g => g
+                    .OrderByDescending(s => s.CreatedAt)
+                    .ThenByDescending(s => s.Id)
+                    .First())
+                .ToList();
+
+            if (snapshots.Count == 0)
                 return 0;
 
-            var predicted = new OutcomeProbabilities(snapshot.HomeWin.Value, snapshot.Draw.Value, snapshot.AwayWin.Value).Normalize();
             var actual = OutcomeFromGoals(homeGoals, awayGoals);
-            _db.Evaluations.Add(new PredictionEvaluation
-            {
-                ModelName = snapshot.ModelName,
-                FixtureId = fixture.Id,
-                HomeTeamId = fixture.HomeTeamId,
-                AwayTeamId = fixture.AwayTeamId,
-                HomeGoals = homeGoals,
-                AwayGoals = awayGoals,
-                HomeWin = predicted.HomeWin,
-                Draw = predicted.Draw,
-                AwayWin = predicted.AwayWin,
-                Actual = actual,
-                BrierScore = ProbabilityHelper.BrierScore(predicted, actual),
-                RankedProbabilityScore = ProbabilityHelper.RankedProbabilityScore(predicted, actual),
-                LogLoss = ProbabilityHelper.LogLoss(predicted, actual),
-                TopPickCorrect = predicted.TopPick == actual,
-                PredictedAt = snapshot.CreatedAt
-            });
 
-            _db.Results.Add(new MatchResult
+            var existingEvaluations = await _db.Evaluations
+                .Where(e => e.FixtureId == fixture.Id)
+                .Select(e => new { e.ModelName, e.PredictedAt })
+                .ToListAsync(ct);
+            var existingKeys = existingEvaluations
+                .Select(e => (e.ModelName, e.PredictedAt))
+                .ToHashSet();
+
+            var shouldRecordResult = !fixture.IsPlayed
+                || fixture.HomeGoals != homeGoals
+                || fixture.AwayGoals != awayGoals;
+
+            var added = 0;
+            foreach (var snapshot in snapshots)
             {
-                Id = CryptoUtil.GetSha256($"manual|{DateTimeOffset.UtcNow:O}|{fixture.HomeTeamId}|{fixture.AwayTeamId}|{homeGoals}-{awayGoals}"),
-                HomeTeamId = fixture.HomeTeamId,
-                AwayTeamId = fixture.AwayTeamId,
-                HomeGoals = homeGoals,
-                AwayGoals = awayGoals,
-                Date = DateTimeOffset.UtcNow,
-                Tournament = "FIFA World Cup 2026",
-                Neutral = fixture.NeutralVenue,
-                Source = "manual"
-            });
+                if (existingKeys.Contains((snapshot.ModelName, snapshot.CreatedAt)))
+                    continue;
+
+                var predicted = new OutcomeProbabilities(snapshot.HomeWin!.Value, snapshot.Draw!.Value, snapshot.AwayWin!.Value).Normalize();
+                _db.Evaluations.Add(new PredictionEvaluation
+                {
+                    ModelName = snapshot.ModelName,
+                    FixtureId = fixture.Id,
+                    HomeTeamId = fixture.HomeTeamId,
+                    AwayTeamId = fixture.AwayTeamId,
+                    HomeGoals = homeGoals,
+                    AwayGoals = awayGoals,
+                    HomeWin = predicted.HomeWin,
+                    Draw = predicted.Draw,
+                    AwayWin = predicted.AwayWin,
+                    Actual = actual,
+                    BrierScore = ProbabilityHelper.BrierScore(predicted, actual),
+                    RankedProbabilityScore = ProbabilityHelper.RankedProbabilityScore(predicted, actual),
+                    LogLoss = ProbabilityHelper.LogLoss(predicted, actual),
+                    TopPickCorrect = predicted.TopPick == actual,
+                    PredictedAt = snapshot.CreatedAt
+                });
+                added++;
+            }
+
+            if (added == 0)
+                return 0;
+
+            if (shouldRecordResult)
+            {
+                _db.Results.Add(new MatchResult
+                {
+                    Id = CryptoUtil.GetSha256($"manual|{DateTimeOffset.UtcNow:O}|{fixture.HomeTeamId}|{fixture.AwayTeamId}|{homeGoals}-{awayGoals}"),
+                    HomeTeamId = fixture.HomeTeamId,
+                    AwayTeamId = fixture.AwayTeamId,
+                    HomeGoals = homeGoals,
+                    AwayGoals = awayGoals,
+                    Date = DateTimeOffset.UtcNow,
+                    Tournament = "FIFA World Cup 2026",
+                    Neutral = fixture.NeutralVenue,
+                    Source = "manual"
+                });
+            }
             fixture.IsPlayed = true;
             fixture.HomeGoals = homeGoals;
             fixture.AwayGoals = awayGoals;
             await _db.SaveChangesAsync(ct);
-            return 1;
+            return added;
         }
 
         public async Task<FixtureEvaluationRefreshReport> EvaluateUnevaluatedPlayedFixturesAsync(CancellationToken ct = default)
@@ -74,17 +110,21 @@ namespace Oloraculo.Web.Services
 
             foreach (var fixture in fixtures)
             {
-                var hasEvaluation = await _db.Evaluations
-                    .AnyAsync(e => e.FixtureId == fixture.Id, ct);
-                if (hasEvaluation)
+                var hasSnapshot = await _db.Snapshots
+                    .AnyAsync(s => s.Kind == "match"
+                        && s.FixtureId == fixture.Id
+                        && s.HomeWin.HasValue
+                        && s.Draw.HasValue
+                        && s.AwayWin.HasValue, ct);
+                if (!hasSnapshot)
                 {
-                    skippedAlreadyEvaluated++;
+                    skippedWithoutSnapshot++;
                     continue;
                 }
 
                 var count = await EvaluateLatestSnapshotAsync(fixture, fixture.HomeGoals!.Value, fixture.AwayGoals!.Value, ct);
                 if (count == 0)
-                    skippedWithoutSnapshot++;
+                    skippedAlreadyEvaluated++;
                 else
                     evaluated += count;
             }

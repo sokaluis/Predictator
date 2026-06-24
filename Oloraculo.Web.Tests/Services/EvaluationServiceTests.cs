@@ -78,6 +78,46 @@ public class EvaluationServiceTests : TestFixtures
     }
 
     [Fact]
+    public async Task Evaluation_EvaluatesLatestSnapshotPerModelIdentityForSameFixture()
+    {
+        await using var db = await NewDb();
+        var fixture = new Fixture { Id = "f1", Group = "A", HomeTeamId = "a", AwayTeamId = "b" };
+        db.Teams.AddRange(new Team { Id = "a", Name = "A" }, new Team { Id = "b", Name = "B" });
+        db.Fixtures.Add(fixture);
+        db.Snapshots.AddRange(
+            Snapshot("f1", DateTimeOffset.Parse("2026-01-01T00:00:00Z"), "Oráculo final"),
+            Snapshot("f1", DateTimeOffset.Parse("2026-01-01T00:01:00Z"), MatchPrediction.ContextAdjustedPredictionIdentity));
+        await db.SaveChangesAsync();
+
+        var count = await new EvaluationService(db).EvaluateLatestSnapshotAsync(fixture, 2, 1);
+
+        var evaluations = await db.Evaluations.ToListAsync();
+        Assert.Equal(2, count);
+        Assert.Contains(evaluations, e => e.ModelName == "Oráculo final");
+        Assert.Contains(evaluations, e => e.ModelName == MatchPrediction.ContextAdjustedPredictionIdentity);
+        Assert.Single(await db.Results.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Evaluation_EvaluatesOnlyLatestSnapshotForSameModelIdentity()
+    {
+        await using var db = await NewDb();
+        var fixture = new Fixture { Id = "f1", Group = "A", HomeTeamId = "a", AwayTeamId = "b" };
+        db.Teams.AddRange(new Team { Id = "a", Name = "A" }, new Team { Id = "b", Name = "B" });
+        db.Fixtures.Add(fixture);
+        db.Snapshots.AddRange(
+            Snapshot("f1", DateTimeOffset.Parse("2026-01-01T00:00:00Z"), "Oráculo final"),
+            Snapshot("f1", DateTimeOffset.Parse("2026-01-02T00:00:00Z"), "Oráculo final"));
+        await db.SaveChangesAsync();
+
+        var count = await new EvaluationService(db).EvaluateLatestSnapshotAsync(fixture, 2, 1);
+
+        var evaluation = Assert.Single(await db.Evaluations.ToListAsync());
+        Assert.Equal(1, count);
+        Assert.Equal(DateTimeOffset.Parse("2026-01-02T00:00:00Z"), evaluation.PredictedAt);
+    }
+
+    [Fact]
     public async Task Evaluation_BulkEvaluatesPlayedFixturesWithPriorSnapshots()
     {
         await using var db = await NewDb();
@@ -111,9 +151,10 @@ public class EvaluationServiceTests : TestFixtures
     public async Task Evaluation_BulkSkipsAlreadyEvaluatedFixtures()
     {
         await using var db = await NewDb();
+        var predictedAt = DateTimeOffset.Parse("2026-01-01T00:00:00Z");
         db.Fixtures.Add(PlayedFixture("f1", 2, 1));
-        db.Snapshots.Add(Snapshot("f1"));
-        db.Evaluations.Add(Evaluation("f1"));
+        db.Snapshots.Add(Snapshot("f1", predictedAt));
+        db.Evaluations.Add(Evaluation("f1", "Oráculo final", predictedAt));
         await db.SaveChangesAsync();
 
         var report = await new EvaluationService(db).EvaluateUnevaluatedPlayedFixturesAsync();
@@ -121,6 +162,30 @@ public class EvaluationServiceTests : TestFixtures
         Assert.Equal(0, report.Evaluated);
         Assert.Equal(1, report.SkippedAlreadyEvaluated);
         Assert.Equal(1, await db.Evaluations.CountAsync(e => e.FixtureId == "f1"));
+    }
+
+    [Fact]
+    public async Task Evaluation_BulkEvaluatesMissingModelIdentityEvenWhenFixtureHasPriorEvaluation()
+    {
+        await using var db = await NewDb();
+        var oraclePredictedAt = DateTimeOffset.Parse("2026-01-01T00:00:00Z");
+        var contextPredictedAt = DateTimeOffset.Parse("2026-01-01T00:01:00Z");
+        db.Fixtures.Add(PlayedFixture("f1", 2, 1));
+        db.Snapshots.AddRange(
+            Snapshot("f1", oraclePredictedAt, "Oráculo final"),
+            Snapshot("f1", contextPredictedAt, MatchPrediction.ContextAdjustedPredictionIdentity));
+        db.Evaluations.Add(Evaluation("f1", "Oráculo final", oraclePredictedAt));
+        db.Results.Add(Result("r1"));
+        await db.SaveChangesAsync();
+
+        var report = await new EvaluationService(db).EvaluateUnevaluatedPlayedFixturesAsync();
+
+        Assert.Equal(1, report.Evaluated);
+        Assert.Equal(0, report.SkippedAlreadyEvaluated);
+        Assert.Equal(0, report.SkippedWithoutSnapshot);
+        Assert.Equal(2, await db.Evaluations.CountAsync(e => e.FixtureId == "f1"));
+        Assert.True(await db.Evaluations.AnyAsync(e => e.ModelName == MatchPrediction.ContextAdjustedPredictionIdentity && e.PredictedAt == contextPredictedAt));
+        Assert.Equal(1, await db.Results.CountAsync());
     }
 
     [Fact]
@@ -155,6 +220,27 @@ public class EvaluationServiceTests : TestFixtures
         Assert.Equal(1, await db.Evaluations.CountAsync(e => e.FixtureId == "f1"));
     }
 
+    [Fact]
+    public async Task Evaluation_IsIdempotentForFixtureModelAndPredictedAt()
+    {
+        await using var db = await NewDb();
+        var fixture = new Fixture { Id = "f1", Group = "A", HomeTeamId = "a", AwayTeamId = "b" };
+        var predictedAt = DateTimeOffset.Parse("2026-01-01T00:00:00Z");
+        db.Teams.AddRange(new Team { Id = "a", Name = "A" }, new Team { Id = "b", Name = "B" });
+        db.Fixtures.Add(fixture);
+        db.Snapshots.Add(Snapshot("f1", predictedAt, "Oráculo final"));
+        await db.SaveChangesAsync();
+        var service = new EvaluationService(db);
+
+        var first = await service.EvaluateLatestSnapshotAsync(fixture, 2, 1);
+        var second = await service.EvaluateLatestSnapshotAsync(fixture, 2, 1);
+
+        Assert.Equal(1, first);
+        Assert.Equal(0, second);
+        Assert.Equal(1, await db.Evaluations.CountAsync(e => e.FixtureId == "f1"));
+        Assert.Single(await db.Results.ToListAsync());
+    }
+
     private static Fixture PlayedFixture(string id, int homeGoals, int awayGoals) => new()
     {
         Id = id,
@@ -167,11 +253,11 @@ public class EvaluationServiceTests : TestFixtures
         NeutralVenue = true
     };
 
-    private static PredictionSnapshot Snapshot(string fixtureId, DateTimeOffset? createdAt = null) => new()
+    private static PredictionSnapshot Snapshot(string fixtureId, DateTimeOffset? createdAt = null, string modelName = "Oráculo final") => new()
     {
         Kind = "match",
         FixtureId = fixtureId,
-        ModelName = "Oráculo final",
+        ModelName = modelName,
         CreatedAt = createdAt ?? DateTimeOffset.UtcNow,
         InputSummaryHash = "hash",
         PayloadJson = "{}",
@@ -181,9 +267,9 @@ public class EvaluationServiceTests : TestFixtures
         AwayWin = .2
     };
 
-    private static PredictionEvaluation Evaluation(string fixtureId) => new()
+    private static PredictionEvaluation Evaluation(string fixtureId, string modelName = "Oráculo final", DateTimeOffset? predictedAt = null) => new()
     {
-        ModelName = "Oráculo final",
+        ModelName = modelName,
         FixtureId = fixtureId,
         HomeTeamId = "a",
         AwayTeamId = "b",
@@ -197,7 +283,20 @@ public class EvaluationServiceTests : TestFixtures
         RankedProbabilityScore = 0,
         LogLoss = 0,
         TopPickCorrect = true,
-        PredictedAt = DateTimeOffset.UtcNow
+        PredictedAt = predictedAt ?? DateTimeOffset.UtcNow
+    };
+
+    private static MatchResult Result(string id) => new()
+    {
+        Id = id,
+        HomeTeamId = "a",
+        AwayTeamId = "b",
+        HomeGoals = 2,
+        AwayGoals = 1,
+        Date = DateTimeOffset.Parse("2026-01-01T00:00:00Z"),
+        Tournament = "FIFA World Cup 2026",
+        Neutral = true,
+        Source = "manual"
     };
 
 }

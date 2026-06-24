@@ -985,6 +985,67 @@ public class RollingBacktestServiceTests
     }
 
     [Fact]
+    public void Compare_OracleBiasSubgroupMetricSummaries()
+    {
+        var results = new[]
+        {
+            Result("first", "c", "a", "2024-01-01", 1, 1),
+            Result("second", "b", "c", "2024-01-02", 2, 0),
+            Result("target", "a", "b", "2024-01-03", 1, 0),
+            Result("future", "a", "b", "2024-01-04", 0, 1)
+        };
+        var strategies = new BacktestModelStrategy[]
+        {
+            new("bias-applied", _ => new OracleBiasTestPredictor(true, new OutcomeProbabilities(0.70, 0.15, 0.15))),
+            new("bias-not-applied", _ => new OracleBiasTestPredictor(false, new OutcomeProbabilities(0.60, 0.20, 0.20)))
+        };
+
+        var comparison = new RollingBacktestService().Compare(
+            results, strategies, minimumPriorMatchesPerTeam: 1);
+
+        var oracleSummary = comparison.Summaries.Single(s => s.ModelName == "Oráculo final");
+
+        Assert.Equal(4, oracleSummary.Count);
+        Assert.NotNull(oracleSummary.RankingBiasAppliedSummary);
+        Assert.NotNull(oracleSummary.RankingBiasNotAppliedSummary);
+
+        Assert.Equal(2, oracleSummary.RankingBiasAppliedSummary.Count);
+        Assert.Equal(2, oracleSummary.RankingBiasNotAppliedSummary.Count);
+        Assert.Equal(oracleSummary.Count,
+            oracleSummary.RankingBiasAppliedSummary.Count + oracleSummary.RankingBiasNotAppliedSummary.Count);
+
+        // Applied group uses 0.70/0.15/0.15 — lower Brier on home-win targets, higher on away-win
+        Assert.True(oracleSummary.RankingBiasAppliedSummary.MeanBrier > 0);
+        Assert.True(oracleSummary.RankingBiasNotAppliedSummary.MeanBrier > 0);
+        Assert.True(oracleSummary.RankingBiasAppliedSummary.MeanLogLoss > 0);
+        Assert.True(oracleSummary.RankingBiasNotAppliedSummary.MeanLogLoss > 0);
+
+        // TopPickAccuracy: applied=0.70 predicts Home, so target(Home win) correct, future(Away win) wrong → 1/2 = 0.5
+        Assert.Equal(0.5, oracleSummary.RankingBiasAppliedSummary.TopPickAccuracy, precision: 6);
+        // not-applied=0.60 predicts Home, same pattern → 1/2 = 0.5
+        Assert.Equal(0.5, oracleSummary.RankingBiasNotAppliedSummary.TopPickAccuracy, precision: 6);
+    }
+
+    [Fact]
+    public void Compare_NonOracleSummariesHaveNullBiasGroupSummaries()
+    {
+        var results = new[]
+        {
+            Result("first", "c", "a", "2024-01-01", 1, 1),
+            Result("second", "b", "c", "2024-01-02", 2, 0),
+            Result("target", "a", "b", "2024-01-03", 1, 0)
+        };
+
+        var comparison = new RollingBacktestService().Compare(results, minimumPriorMatchesPerTeam: 1);
+
+        foreach (var summary in comparison.Summaries.Where(s => s.ModelName != "Oráculo final"))
+        {
+            Assert.Null(summary.RankingBiasAppliedSummary);
+            Assert.Null(summary.RankingBiasNotAppliedSummary);
+        }
+    }
+
+    [Fact]
     public void Compare_NonOracleSummariesHaveZeroRankingBiasCounts()
     {
         var results = new[]
@@ -1230,6 +1291,23 @@ public class RollingBacktestServiceTests
             RatingTypeEnum.Elo => home ? snapshot?.HomeElo : snapshot?.AwayElo,
             RatingTypeEnum.Fifa => home ? snapshot?.HomeFifaRank : snapshot?.AwayFifaRank,
             _ => null
+        };
+    }
+
+    private sealed class OracleBiasTestPredictor(bool applyBias, OutcomeProbabilities outcome) : IPredictor
+    {
+        public string Name => "Oráculo final";
+        public int Priority => int.MaxValue;
+
+        public MatchPrediction Predict(MatchContext context) => new()
+        {
+            PredictorName = "Oráculo final",
+            PredictorPriority = Priority,
+            FixtureId = context.Fixture.Id,
+            HomeTeamId = context.HomeTeamId,
+            AwayTeamId = context.AwayTeamId,
+            Outcome = outcome,
+            Drivers = applyBias ? ["Aplicó una calibración Elo/FIFA"] : []
         };
     }
 }

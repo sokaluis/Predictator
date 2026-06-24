@@ -955,6 +955,83 @@ public class RollingBacktestReportServiceTests
         Assert.True(wcQualifiersIndex < friendliesIndex);
     }
 
+    [Fact]
+    public void Render_PrintsOracleRankingBiasSubgroupMetrics()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(6, 6, 0, 0, 0, []),
+            [
+                new BacktestModelSummary("Modelo base", 2, 0.667, 1.099, 0.333, 0.5),
+                new BacktestModelSummary("Oráculo final", 6, 0.400, 0.700, 0.190, 0.80)
+                {
+                    RankingBiasAppliedCount = 3,
+                    RankingBiasNotAppliedCount = 3,
+                    RankingBiasAppliedSummary = new BacktestBiasGroupSummary(3, 0.3500, 0.6200, 0.1700, 0.85),
+                    RankingBiasNotAppliedSummary = new BacktestBiasGroupSummary(3, 0.4500, 0.7800, 0.2100, 0.75)
+                }
+            ]);
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.Contains("## Oráculo final — ranking bias subgroup metrics", output);
+        Assert.Contains("this is not a same-fixture counterfactual", output);
+        Assert.Contains("Compares separate backtest subsets where the Elo/FIFA ranking bias calibration was applied", output);
+        Assert.Contains("| Bias applied? | Count | MeanBrier | MeanLogLoss | MeanRPS | TopPickAccuracy |", output);
+        Assert.Contains("| Yes | 3 | 0.3500 | 0.6200 | 0.1700 | 85.0 % |", output);
+        Assert.Contains("| No | 3 | 0.4500 | 0.7800 | 0.2100 | 75.0 % |", output);
+    }
+
+    [Fact]
+    public void Render_OmitsRankingBiasSubgroupMetricsWhenOracleMissing()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(4, 4, 0, 0, 0, []),
+            [new BacktestModelSummary("Modelo base", 2, 0.667, 1.099, 0.333, 0.5)]);
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.DoesNotContain("## Oráculo final — ranking bias subgroup metrics", output);
+    }
+
+    [Fact]
+    public void Render_OmitsRankingBiasSubgroupMetricsWhenNoSubgroupSummaries()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(4, 4, 0, 0, 0, []),
+            [
+                new BacktestModelSummary("Oráculo final", 2, 0.450, 0.750, 0.200, 0.75)
+                {
+                    RankingBiasAppliedCount = 1,
+                    RankingBiasNotAppliedCount = 1
+                }
+            ]);
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.DoesNotContain("## Oráculo final — ranking bias subgroup metrics", output);
+    }
+
+    [Fact]
+    public void Render_PrintsRankingBiasSubgroupMetricsWithOnlyAppliedGroup()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(4, 4, 0, 0, 0, []),
+            [
+                new BacktestModelSummary("Oráculo final", 2, 0.350, 0.620, 0.170, 0.85)
+                {
+                    RankingBiasAppliedCount = 2,
+                    RankingBiasNotAppliedCount = 0,
+                    RankingBiasAppliedSummary = new BacktestBiasGroupSummary(2, 0.3500, 0.6200, 0.1700, 0.85)
+                }
+            ]);
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.Contains("## Oráculo final — ranking bias subgroup metrics", output);
+        Assert.Contains("| Yes | 2 | 0.3500 | 0.6200 | 0.1700 | 85.0 % |", output);
+        Assert.DoesNotContain("| No | 0.0000 |", output);
+    }
+
     private static HistoricalResultCsvRow Row(
         string date,
         string home,

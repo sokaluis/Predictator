@@ -36,15 +36,29 @@ namespace Oloraculo.Web.Services
 
             var existingEvaluations = await _db.Evaluations
                 .Where(e => e.FixtureId == fixture.Id)
-                .Select(e => new { e.ModelName, e.PredictedAt })
                 .ToListAsync(ct);
             var seenKeys = existingEvaluations
                 .Select(e => (e.ModelName, e.PredictedAt))
                 .ToHashSet();
 
+            foreach (var evaluation in existingEvaluations)
+                UpdateEvaluationActual(evaluation, homeGoals, awayGoals, actual);
+
+            var resultDate = fixture.KickoffUtc ?? DateTimeOffset.UtcNow;
+            var manualResults = await _db.Results
+                .Where(r => r.Source == "manual"
+                    && r.HomeTeamId == fixture.HomeTeamId
+                    && r.AwayTeamId == fixture.AwayTeamId
+                    && r.Tournament == "FIFA World Cup 2026")
+                .ToListAsync(ct);
+            var existingManualResult = fixture.KickoffUtc.HasValue
+                ? manualResults.FirstOrDefault(r => r.Date == fixture.KickoffUtc.Value) ?? manualResults.OrderByDescending(r => r.Date).FirstOrDefault()
+                : manualResults.OrderByDescending(r => r.Date).FirstOrDefault();
+
             var shouldRecordResult = !fixture.IsPlayed
                 || fixture.HomeGoals != homeGoals
-                || fixture.AwayGoals != awayGoals;
+                || fixture.AwayGoals != awayGoals
+                || existingManualResult is null;
 
             var added = 0;
             foreach (var snapshot in snapshots)
@@ -105,23 +119,30 @@ namespace Oloraculo.Web.Services
                 }
             }
 
-            if (added == 0)
-                return 0;
-
             if (shouldRecordResult)
             {
-                _db.Results.Add(new MatchResult
+                if (existingManualResult is null)
                 {
-                    Id = CryptoUtil.GetSha256($"manual|{DateTimeOffset.UtcNow:O}|{fixture.HomeTeamId}|{fixture.AwayTeamId}|{homeGoals}-{awayGoals}"),
-                    HomeTeamId = fixture.HomeTeamId,
-                    AwayTeamId = fixture.AwayTeamId,
-                    HomeGoals = homeGoals,
-                    AwayGoals = awayGoals,
-                    Date = DateTimeOffset.UtcNow,
-                    Tournament = "FIFA World Cup 2026",
-                    Neutral = fixture.NeutralVenue,
-                    Source = "manual"
-                });
+                    _db.Results.Add(new MatchResult
+                    {
+                        Id = CryptoUtil.GetSha256($"manual|{resultDate:O}|{fixture.HomeTeamId}|{fixture.AwayTeamId}"),
+                        HomeTeamId = fixture.HomeTeamId,
+                        AwayTeamId = fixture.AwayTeamId,
+                        HomeGoals = homeGoals,
+                        AwayGoals = awayGoals,
+                        Date = resultDate,
+                        Tournament = "FIFA World Cup 2026",
+                        Neutral = fixture.NeutralVenue,
+                        Source = "manual"
+                    });
+                }
+                else
+                {
+                    existingManualResult.HomeGoals = homeGoals;
+                    existingManualResult.AwayGoals = awayGoals;
+                    existingManualResult.Date = resultDate;
+                    existingManualResult.Neutral = fixture.NeutralVenue;
+                }
             }
             fixture.IsPlayed = true;
             fixture.HomeGoals = homeGoals;
@@ -165,6 +186,18 @@ namespace Oloraculo.Web.Services
                 evaluated,
                 skippedAlreadyEvaluated,
                 skippedWithoutSnapshot);
+        }
+
+        private static void UpdateEvaluationActual(PredictionEvaluation evaluation, int homeGoals, int awayGoals, string actual)
+        {
+            var predicted = new OutcomeProbabilities(evaluation.HomeWin, evaluation.Draw, evaluation.AwayWin).Normalize();
+            evaluation.HomeGoals = homeGoals;
+            evaluation.AwayGoals = awayGoals;
+            evaluation.Actual = actual;
+            evaluation.BrierScore = ProbabilityHelper.BrierScore(predicted, actual);
+            evaluation.RankedProbabilityScore = ProbabilityHelper.RankedProbabilityScore(predicted, actual);
+            evaluation.LogLoss = ProbabilityHelper.LogLoss(predicted, actual);
+            evaluation.TopPickCorrect = predicted.TopPick == actual;
         }
 
         public async Task<IReadOnlyList<ModelPerformanceRow>> PerformanceAsync(CancellationToken ct = default)

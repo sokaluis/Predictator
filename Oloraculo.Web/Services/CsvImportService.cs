@@ -145,9 +145,15 @@ namespace Oloraculo.Web.Services
 
         private async Task ImportHistoricalResultsAsync(CancellationToken ct)
         {
-            _db.Results.RemoveRange(_db.Results);
+            var manualResultKeys = await _db.Results
+                .Where(r => r.Source == "manual")
+                .Select(r => new ResultIdentity(r.HomeTeamId, r.AwayTeamId, r.Date, r.Tournament))
+                .ToListAsync(ct);
+
+            _db.Results.RemoveRange(_db.Results.Where(r => r.Source != "manual"));
             var rows = CsvParsingHelper.ReadCsv<HistoricalResultCsvRow>(FullPath(OloraculoDataFiles.HistoricalResultsCsv));
             var importedIds = new HashSet<string>(StringComparer.Ordinal);
+            var manualIdentities = manualResultKeys.ToHashSet();
 
             foreach (var row in rows)
             {
@@ -160,6 +166,9 @@ namespace Oloraculo.Web.Services
 
                 var homeId = TeamNameNormalizer.ToId(row.HomeTeam);
                 var awayId = TeamNameNormalizer.ToId(row.AwayTeam);
+                if (manualIdentities.Contains(new ResultIdentity(homeId, awayId, date, row.Tournament)))
+                    continue;
+
                 var resultId = CryptoUtil.GetSha256($"{homeId}-{awayId}-{date:O}-{row.Tournament}-{homeScore}-{awayScore}");
 
                 if (!importedIds.Add(resultId))
@@ -183,8 +192,32 @@ namespace Oloraculo.Web.Services
             }
         }
 
+        private readonly record struct ResultIdentity(string HomeTeamId, string AwayTeamId, DateTimeOffset Date, string Tournament);
+
         private async Task GenerateFixturesAsync(CancellationToken ct)
         {
+            var existingFixtureStates = await _db.Fixtures
+                .Select(f => new FixtureState(
+                    f.Id,
+                    f.IsPlayed,
+                    f.HomeGoals,
+                    f.AwayGoals,
+                    f.KickoffUtc,
+                    f.Venue,
+                    f.City,
+                    f.Status,
+                    f.NeutralVenue))
+                .ToDictionaryAsync(f => f.FixtureId, ct);
+            var manualResults = await _db.Results
+                .Where(r => r.Source == "manual" && r.Tournament == "FIFA World Cup 2026")
+                .ToListAsync(ct);
+            var manualResultStates = manualResults
+                .GroupBy(r => new { r.HomeTeamId, r.AwayTeamId })
+                .Select(g => g.OrderByDescending(r => r.Date).First())
+                .ToDictionary(
+                r => (r.HomeTeamId, r.AwayTeamId),
+                r => new FixtureState(string.Empty, true, r.HomeGoals, r.AwayGoals, r.Date, null, null, null, r.Neutral));
+
             _db.Fixtures.RemoveRange(_db.Fixtures);
             var groups = await _db.Groups.AsNoTracking().ToListAsync(ct);
 
@@ -195,19 +228,46 @@ namespace Oloraculo.Web.Services
                 {
                     for (var j = i + 1; j < teams.Count; j++)
                     {
-                        _db.Fixtures.Add(new Fixture
+                        var fixtureId = Fixture.GenerateFixtureId(group.Name, teams[i], teams[j]);
+                        var fixture = new Fixture
                         {
-                            Id = Fixture.GenerateFixtureId(group.Name, teams[i], teams[j]),
+                            Id = fixtureId,
                             Group = group.Name,
                             HomeTeamId = teams[i],
                             AwayTeamId = teams[j],
                             NeutralVenue = true,
                             Source = $"derivado de {OloraculoDataFiles.GroupsCsv}"
-                        });
+                        };
+
+                        if (existingFixtureStates.TryGetValue(fixtureId, out var existingState)
+                            || manualResultStates.TryGetValue((teams[i], teams[j]), out existingState))
+                        {
+                            fixture.IsPlayed = existingState.IsPlayed;
+                            fixture.HomeGoals = existingState.HomeGoals;
+                            fixture.AwayGoals = existingState.AwayGoals;
+                            fixture.KickoffUtc = existingState.KickoffUtc;
+                            fixture.Venue = existingState.Venue;
+                            fixture.City = existingState.City;
+                            fixture.Status = existingState.Status;
+                            fixture.NeutralVenue = existingState.NeutralVenue;
+                        }
+
+                        _db.Fixtures.Add(fixture);
                     }
                 }
             }
         }
+
+        private readonly record struct FixtureState(
+            string FixtureId,
+            bool IsPlayed,
+            int? HomeGoals,
+            int? AwayGoals,
+            DateTimeOffset? KickoffUtc,
+            string? Venue,
+            string? City,
+            string? Status,
+            bool NeutralVenue);
 
         private async Task CreateTeamIfMissing(string name, string sourceFile, CancellationToken ct)
         {

@@ -241,6 +241,70 @@ public class EvaluationServiceTests : TestFixtures
         Assert.Single(await db.Results.ToListAsync());
     }
 
+    [Fact]
+    public async Task Evaluation_CorrectingScoreUpdatesManualResultWithoutDuplicate()
+    {
+        await using var db = await NewDb();
+        var fixture = new Fixture { Id = "f1", Group = "A", HomeTeamId = "a", AwayTeamId = "b", KickoffUtc = DateTimeOffset.Parse("2026-06-11T00:00:00Z") };
+        var predictedAt = DateTimeOffset.Parse("2026-01-01T00:00:00Z");
+        db.Teams.AddRange(new Team { Id = "a", Name = "A" }, new Team { Id = "b", Name = "B" });
+        db.Fixtures.Add(fixture);
+        db.Snapshots.Add(Snapshot("f1", predictedAt, "Oráculo final"));
+        await db.SaveChangesAsync();
+        var service = new EvaluationService(db);
+
+        var first = await service.EvaluateLatestSnapshotAsync(fixture, 2, 1);
+        var corrected = await service.EvaluateLatestSnapshotAsync(fixture, 1, 3);
+
+        Assert.Equal(1, first);
+        Assert.Equal(0, corrected);
+        var result = Assert.Single(await db.Results.Where(r => r.Source == "manual").ToListAsync());
+        Assert.Equal(1, result.HomeGoals);
+        Assert.Equal(3, result.AwayGoals);
+        Assert.Equal(DateTimeOffset.Parse("2026-06-11T00:00:00Z"), result.Date);
+        Assert.Equal(1, fixture.HomeGoals);
+        Assert.Equal(3, fixture.AwayGoals);
+        var evaluation = Assert.Single(await db.Evaluations.Where(e => e.FixtureId == "f1").ToListAsync());
+        Assert.Equal("Away", evaluation.Actual);
+        Assert.False(evaluation.TopPickCorrect);
+        Assert.Equal(1, evaluation.HomeGoals);
+        Assert.Equal(3, evaluation.AwayGoals);
+    }
+
+    [Fact]
+    public async Task Evaluation_UpdatesLegacyManualResultWithDifferentDateWithoutDuplicate()
+    {
+        await using var db = await NewDb();
+        var kickoff = DateTimeOffset.Parse("2026-06-11T00:00:00Z");
+        var legacyDate = DateTimeOffset.Parse("2026-06-24T00:00:00Z");
+        var fixture = new Fixture { Id = "f1", Group = "A", HomeTeamId = "a", AwayTeamId = "b", KickoffUtc = kickoff };
+        db.Teams.AddRange(new Team { Id = "a", Name = "A" }, new Team { Id = "b", Name = "B" });
+        db.Fixtures.Add(fixture);
+        db.Snapshots.Add(Snapshot("f1", DateTimeOffset.Parse("2026-01-01T00:00:00Z"), "Oráculo final"));
+        db.Results.Add(new MatchResult
+        {
+            Id = "legacy-manual-result",
+            HomeTeamId = "a",
+            AwayTeamId = "b",
+            HomeGoals = 2,
+            AwayGoals = 1,
+            Date = legacyDate,
+            Tournament = "FIFA World Cup 2026",
+            Neutral = true,
+            Source = "manual"
+        });
+        await db.SaveChangesAsync();
+
+        var count = await new EvaluationService(db).EvaluateLatestSnapshotAsync(fixture, 1, 3);
+
+        Assert.Equal(1, count);
+        var result = Assert.Single(await db.Results.Where(r => r.Source == "manual").ToListAsync());
+        Assert.Equal("legacy-manual-result", result.Id);
+        Assert.Equal(1, result.HomeGoals);
+        Assert.Equal(3, result.AwayGoals);
+        Assert.Equal(kickoff, result.Date);
+    }
+
     private static string BuildContextAdjustedPayload(string baselinePredictorName = "Oráculo final", string? baselinePredictionIdentity = null, double baselineHomeWin = 0.45, double baselineDraw = 0.25, double baselineAwayWin = 0.30)
     {
         var baselineIdentity = baselinePredictionIdentity is null ? "null" : $"\"{baselinePredictionIdentity}\"";

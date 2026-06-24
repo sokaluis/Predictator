@@ -4,7 +4,10 @@ namespace Oloraculo.Web.Models
 {
     public class MatchPrediction
     {
+        public const string ContextAdjustedPredictionIdentity = "Oráculo final + contexto API";
+
         public string PredictorName { get; set; }
+        public string? PredictionIdentity { get; set; }
         public int PredictorPriority { get; set; }
         public string FixtureId { get; set; }
         public string HomeTeamId { get; set; }
@@ -20,5 +23,7 @@ namespace Oloraculo.Web.Models
         public IReadOnlyList<string> FeaturesMissing { get; init; } = [];
         public IReadOnlyList<SourceMetadata> Sources { get; init; } = [];
         public bool Degraded { get; init; }
+        public string EffectiveModelName => string.IsNullOrWhiteSpace(PredictionIdentity) ? PredictorName : PredictionIdentity;
+        public bool IsContextAdjusted => string.Equals(PredictionIdentity, ContextAdjustedPredictionIdentity, StringComparison.Ordinal);
     }
 }

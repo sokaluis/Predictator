@@ -76,7 +76,7 @@ namespace Oloraculo.Web.Services
                 throw new InvalidOperationException("No se puede guardar un fixture completo con partidos duplicados.");
 
             var now = DateTimeOffset.UtcNow;
-            var modelName = predictionList.Select(p => p.PredictorName).Distinct(StringComparer.Ordinal).SingleOrDefault() ?? "Fixture completo";
+            var modelName = BatchModelName(predictionList);
             var payload = JsonSerializer.Serialize(new FullFixtureSnapshotPayload
             {
                 SavedAt = now,
@@ -127,7 +127,7 @@ namespace Oloraculo.Web.Services
                 throw new InvalidOperationException("No se puede guardar un fixture completo con partidos duplicados.");
 
             var now = DateTimeOffset.UtcNow;
-            var modelName = predictionList.Select(p => p.PredictorName).Distinct(StringComparer.Ordinal).SingleOrDefault() ?? "Fixture completo";
+            var modelName = BatchModelName(predictionList);
             var payload = JsonSerializer.Serialize(new FullFixtureSnapshotPayload
             {
                 SavedAt = now,
@@ -172,6 +172,7 @@ namespace Oloraculo.Web.Services
             var payload = JsonSerializer.Serialize(new
             {
                 prediction.PredictorName,
+                prediction.PredictionIdentity,
                 prediction.PredictorPriority,
                 prediction.FixtureId,
                 prediction.HomeTeamId,
@@ -194,15 +195,25 @@ namespace Oloraculo.Web.Services
                 Kind = MatchKind,
                 BatchId = batchId,
                 FixtureId = prediction.FixtureId,
-                ModelName = prediction.PredictorName,
+                ModelName = prediction.EffectiveModelName,
                 CreatedAt = createdAt,
-                InputSummaryHash = CryptoUtil.GetSha256($"{prediction.FixtureId}|{prediction.PredictorName}|{createdAt:O}"),
+                InputSummaryHash = CryptoUtil.GetSha256($"{prediction.FixtureId}|{prediction.EffectiveModelName}|{createdAt:O}"),
                 PayloadJson = payload,
                 Explanation = prediction.Explanation,
                 HomeWin = prediction.Outcome.HomeWin,
                 Draw = prediction.Outcome.Draw,
                 AwayWin = prediction.Outcome.AwayWin
             };
+        }
+
+        private static string BatchModelName(IReadOnlyList<MatchPrediction> predictions)
+        {
+            var modelNames = predictions
+                .Select(prediction => prediction.EffectiveModelName)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+
+            return modelNames.Count == 1 ? modelNames[0] : "Fixture completo";
         }
 
         public async Task<IReadOnlyList<FullFixtureSnapshotSummary>> FullFixtureSnapshotsAsync(int? take = null, CancellationToken ct = default)
@@ -420,9 +431,14 @@ namespace Oloraculo.Web.Services
                 return new MatchSnapshotLoadResult(null, "El snapshot no contiene probabilidades válidas.");
 
             var normalized = outcome.Value.Normalize();
+            var predictionIdentity = stored.PredictionIdentity;
+            if (string.IsNullOrWhiteSpace(predictionIdentity) && stored.AdjustmentComparison?.HasModeledContextEffect == true)
+                predictionIdentity = MatchPrediction.ContextAdjustedPredictionIdentity;
+
             var prediction = new MatchPrediction
             {
                 PredictorName = FirstNonEmpty(stored.PredictorName, snapshot.ModelName) ?? "Snapshot",
+                PredictionIdentity = predictionIdentity,
                 PredictorPriority = stored.PredictorPriority ?? 0,
                 FixtureId = fixtureId,
                 HomeTeamId = homeTeamId,
@@ -562,6 +578,7 @@ namespace Oloraculo.Web.Services
                 return new StoredMatchPrediction
                 {
                     PredictorName = ReadString(root, "PredictorName"),
+                    PredictionIdentity = ReadString(root, "PredictionIdentity"),
                     PredictorPriority = ReadInt(root, "PredictorPriority"),
                     FixtureId = ReadString(root, "FixtureId"),
                     HomeTeamId = ReadString(root, "HomeTeamId"),
@@ -600,6 +617,7 @@ namespace Oloraculo.Web.Services
         private static object ToPredictionPayload(MatchPrediction prediction) => new
         {
             prediction.PredictorName,
+            prediction.PredictionIdentity,
             prediction.PredictorPriority,
             prediction.FixtureId,
             prediction.HomeTeamId,
@@ -654,6 +672,7 @@ namespace Oloraculo.Web.Services
             return new MatchPrediction
             {
                 PredictorName = ReadString(element, "PredictorName") ?? "Snapshot",
+                PredictionIdentity = ReadString(element, "PredictionIdentity"),
                 PredictorPriority = ReadInt(element, "PredictorPriority") ?? 0,
                 FixtureId = ReadString(element, "FixtureId") ?? "",
                 HomeTeamId = ReadString(element, "HomeTeamId") ?? "",
@@ -926,6 +945,7 @@ namespace Oloraculo.Web.Services
         private sealed class StoredMatchPrediction
         {
             public string? PredictorName { get; init; }
+            public string? PredictionIdentity { get; init; }
             public int? PredictorPriority { get; init; }
             public string? FixtureId { get; init; }
             public string? HomeTeamId { get; init; }

@@ -2,6 +2,10 @@
     <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
         <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Outlined">L@(Prediction.PredictorPriority)</MudChip>
         <MudText Typo="Typo.subtitle1">@Prediction.PredictorName</MudText>
+        @if (Prediction.IsContextAdjusted)
+        {
+            <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">API/contexto</MudChip>
+        }
         @if (Prediction.Degraded)
         {
             <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Outlined">degradado</MudChip>

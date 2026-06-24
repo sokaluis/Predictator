@@ -122,6 +122,7 @@ public abstract class TestFixtures
     protected static void AssertPredictionEqual(MatchPrediction expected, MatchPrediction actual)
     {
         Assert.Equal(expected.PredictorName, actual.PredictorName);
+        Assert.Equal(expected.PredictionIdentity, actual.PredictionIdentity);
         Assert.Equal(expected.PredictorPriority, actual.PredictorPriority);
         Assert.Equal(expected.FixtureId, actual.FixtureId);
         Assert.Equal(expected.HomeTeamId, actual.HomeTeamId);

@@ -121,6 +121,9 @@ public class PredictionServiceTests : TestFixtures
         Assert.Equal("Modelo de goles (Poisson)", comparison.BaselineMethodName);
         Assert.Equal("Goles + contexto reciente", comparison.AdjustedMethodName);
         Assert.Equal(result.BestPrediction.PredictorName, comparison.AdjustedPrediction.PredictorName);
+        Assert.Equal(MatchPrediction.ContextAdjustedPredictionIdentity, result.BestPrediction.PredictionIdentity);
+        Assert.True(result.BestPrediction.IsContextAdjusted);
+        Assert.True(comparison.HasModeledContextEffect);
         Assert.True(comparison.HasExpectedGoalsDelta);
         Assert.Contains(comparison.Signals, signal =>
             signal.Name == "Disponibilidad de jugadores" && signal.Applied && signal.Modeled);
@@ -156,6 +159,9 @@ public class PredictionServiceTests : TestFixtures
         var comparison = Assert.IsType<PredictionAdjustmentComparison>(result!.AdjustmentComparison);
         Assert.False(comparison.HasExpectedGoalsDelta);
         Assert.False(comparison.PickChanged);
+        Assert.False(comparison.HasModeledContextEffect);
+        Assert.Null(result.BestPrediction.PredictionIdentity);
+        Assert.False(result.BestPrediction.IsContextAdjusted);
 
         var lineups = comparison.Signals.Single(signal => signal.Name == "Alineaciones");
         Assert.True(lineups.Available);
@@ -166,6 +172,42 @@ public class PredictionServiceTests : TestFixtures
         Assert.True(odds.Available);
         Assert.False(odds.Applied);
         Assert.False(odds.Modeled);
+    }
+
+    [Fact]
+    public void PredictionAdjustmentComparison_RequiresAppliedModeledSignalForContextEffect()
+    {
+        var baseline = Prediction(4, "Oráculo final", .45, .30, .25);
+        baseline.ExpectedHomeGoals = 1.10;
+        baseline.ExpectedAwayGoals = 0.90;
+
+        var adjusted = Prediction(4, "Oráculo final", .50, .28, .22);
+        adjusted.ExpectedHomeGoals = 1.25;
+        adjusted.ExpectedAwayGoals = 0.85;
+
+        var comparison = new PredictionAdjustmentComparison
+        {
+            BaselinePrediction = baseline,
+            AdjustedPrediction = adjusted,
+            BaselineMethodName = "Modelo de goles (Poisson)",
+            AdjustedMethodName = "Goles + contexto reciente",
+            Signals =
+            [
+                new PredictionAdjustmentSignal
+                {
+                    Name = "Disponibilidad de jugadores",
+                    Detail = "Modeled but not selected/applied.",
+                    Applied = false,
+                    Available = true,
+                    Modeled = true
+                }
+            ]
+        };
+
+        Assert.True(comparison.HasModeledSignal);
+        Assert.False(comparison.HasAppliedModeledSignal);
+        Assert.True(comparison.HasExpectedGoalsDelta);
+        Assert.False(comparison.HasModeledContextEffect);
     }
 
     private static void SeedPredictionData(

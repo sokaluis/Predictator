@@ -1032,6 +1032,145 @@ public class RollingBacktestReportServiceTests
         Assert.DoesNotContain("| No | 0.0000 |", output);
     }
 
+    [Fact]
+    public void Render_PrintsOracleRankingBiasSubgroupMetricsBySegment()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(6, 6, 0, 0, 0, []),
+            [new BacktestModelSummary("Oráculo final", 6, 0.400, 0.700, 0.190, 0.80)])
+        {
+            SegmentSummaries =
+            [
+                SegmentSummaryWithOracleBiasSubgroup(
+                    BacktestMatchSegmentClassifier.Friendlies,
+                    "Oráculo final", 3,
+                    appliedSummary: new BacktestBiasGroupSummary(2, 0.3500, 0.6200, 0.1700, 0.85),
+                    notAppliedSummary: new BacktestBiasGroupSummary(1, 0.4500, 0.7800, 0.2100, 0.75)),
+                SegmentSummaryWithOracleBiasSubgroup(
+                    BacktestMatchSegmentClassifier.WorldCupQualifiers,
+                    "Oráculo final", 3,
+                    appliedSummary: new BacktestBiasGroupSummary(1, 0.3200, 0.5800, 0.1600, 0.90),
+                    notAppliedSummary: new BacktestBiasGroupSummary(2, 0.4800, 0.8200, 0.2300, 0.70))
+            ]
+        };
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.Contains("## Oráculo final — ranking bias subgroup metrics by segment", output);
+        Assert.Contains("this is not a same-fixture counterfactual", output);
+        Assert.Contains("| Segment | Ranking bias | Count | MeanBrier | MeanLogLoss | MeanRPS | TopPickAccuracy |", output);
+        Assert.Contains("| Friendlies | Yes | 2 | 0.3500 | 0.6200 | 0.1700 | 85.0 % |", output);
+        Assert.Contains("| Friendlies | No | 1 | 0.4500 | 0.7800 | 0.2100 | 75.0 % |", output);
+        Assert.Contains("| World Cup qualifiers | Yes | 1 | 0.3200 | 0.5800 | 0.1600 | 90.0 % |", output);
+        Assert.Contains("| World Cup qualifiers | No | 2 | 0.4800 | 0.8200 | 0.2300 | 70.0 % |", output);
+    }
+
+    [Fact]
+    public void Render_OmitsRankingBiasSubgroupMetricsBySegmentWhenNoOracleSegments()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(4, 4, 0, 0, 0, []),
+            [new BacktestModelSummary("Modelo base", 4, 0.667, 1.099, 0.333, 0.5)])
+        {
+            SegmentSummaries =
+            [
+                new BacktestSegmentModelSummary(
+                    BacktestMatchSegmentClassifier.Friendlies,
+                    new BacktestModelSummary("Modelo base", 2, 0.500, 0.700, 0.200, 1.0))
+            ]
+        };
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.DoesNotContain("## Oráculo final — ranking bias subgroup metrics by segment", output);
+    }
+
+    [Fact]
+    public void Render_OmitsRankingBiasSubgroupMetricsBySegmentWhenOracleSegmentsHaveNoSubgroupData()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(4, 4, 0, 0, 0, []),
+            [new BacktestModelSummary("Oráculo final", 4, 0.400, 0.700, 0.190, 0.80)
+            {
+                RankingBiasAppliedCount = 2,
+                RankingBiasNotAppliedCount = 2
+            }])
+        {
+            SegmentSummaries =
+            [
+                new BacktestSegmentModelSummary(
+                    BacktestMatchSegmentClassifier.Friendlies,
+                    new BacktestModelSummary("Oráculo final", 2, 0.400, 0.700, 0.190, 0.80)
+                    {
+                        RankingBiasAppliedCount = 1,
+                        RankingBiasNotAppliedCount = 1
+                    })
+            ]
+        };
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.DoesNotContain("## Oráculo final — ranking bias subgroup metrics by segment", output);
+    }
+
+    [Fact]
+    public void Render_RankingBiasSubgroupMetricsBySegmentRespectsSegmentOrder()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(4, 4, 0, 0, 0, []),
+            [new BacktestModelSummary("Oráculo final", 4, 0.400, 0.700, 0.190, 0.80)])
+        {
+            SegmentSummaries =
+            [
+                SegmentSummaryWithOracleBiasSubgroup(
+                    BacktestMatchSegmentClassifier.WorldCupQualifiers,
+                    "Oráculo final", 2,
+                    appliedSummary: new BacktestBiasGroupSummary(1, 0.3200, 0.5800, 0.1600, 0.90),
+                    notAppliedSummary: new BacktestBiasGroupSummary(1, 0.4800, 0.8200, 0.2300, 0.70)),
+                SegmentSummaryWithOracleBiasSubgroup(
+                    BacktestMatchSegmentClassifier.Friendlies,
+                    "Oráculo final", 2,
+                    appliedSummary: new BacktestBiasGroupSummary(1, 0.3500, 0.6200, 0.1700, 0.85),
+                    notAppliedSummary: new BacktestBiasGroupSummary(1, 0.4500, 0.7800, 0.2100, 0.75))
+            ]
+        };
+
+        var output = RollingBacktestReportService.Render(report);
+
+        var sectionStart = output.IndexOf(
+            "## Oráculo final — ranking bias subgroup metrics by segment", StringComparison.Ordinal);
+        var friendliesIndex = output.IndexOf("| Friendlies |", sectionStart, StringComparison.Ordinal);
+        var wcQualifiersIndex = output.IndexOf("| World Cup qualifiers |", sectionStart, StringComparison.Ordinal);
+
+        Assert.True(wcQualifiersIndex < friendliesIndex);
+    }
+
+    [Fact]
+    public void Render_PrintsRankingBiasSubgroupMetricsBySegment_FocusedSegment()
+    {
+        var report = new BacktestReport(
+            new BacktestReportLoadResult(4, 4, 0, 0, 0, []),
+            [new BacktestModelSummary("Oráculo final", 4, 0.400, 0.700, 0.190, 0.80)])
+        {
+            Options = new BacktestReportOptions(Segment: BacktestMatchSegmentClassifier.Friendlies),
+            SegmentSummaries =
+            [
+                SegmentSummaryWithOracleBiasSubgroup(
+                    BacktestMatchSegmentClassifier.Friendlies,
+                    "Oráculo final", 4,
+                    appliedSummary: new BacktestBiasGroupSummary(2, 0.3500, 0.6200, 0.1700, 0.85),
+                    notAppliedSummary: new BacktestBiasGroupSummary(2, 0.4500, 0.7800, 0.2100, 0.75))
+            ]
+        };
+
+        var output = RollingBacktestReportService.Render(report);
+
+        Assert.Contains("## Oráculo final — ranking bias subgroup metrics by segment", output);
+        Assert.Contains("| Friendlies | Yes | 2 | 0.3500 | 0.6200 | 0.1700 | 85.0 % |", output);
+        Assert.Contains("| Friendlies | No | 2 | 0.4500 | 0.7800 | 0.2100 | 75.0 % |", output);
+        Assert.DoesNotContain("| World Cup qualifiers |", output);
+    }
+
     private static HistoricalResultCsvRow Row(
         string date,
         string home,
@@ -1080,5 +1219,17 @@ public class RollingBacktestReportServiceTests
         {
             RankingBiasAppliedCount = applied,
             RankingBiasNotAppliedCount = notApplied
+        });
+
+    private static BacktestSegmentModelSummary SegmentSummaryWithOracleBiasSubgroup(
+        string segment,
+        string model,
+        int count,
+        BacktestBiasGroupSummary? appliedSummary = null,
+        BacktestBiasGroupSummary? notAppliedSummary = null) =>
+        new(segment, new BacktestModelSummary(model, count, 0.400, 0.700, 0.190, 0.80)
+        {
+            RankingBiasAppliedSummary = appliedSummary,
+            RankingBiasNotAppliedSummary = notAppliedSummary
         });
 }

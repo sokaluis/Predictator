@@ -515,4 +515,153 @@ public class SnapshotServiceTests : TestFixtures
             ]
     };
 
+    [Fact]
+    public async Task SnapshotService_MatchSnapshotChips_ReturnsLatestPerFixture()
+    {
+        await using var db = await NewDb();
+        db.Fixtures.AddRange(
+            new Fixture { Id = "f1", Group = "A", HomeTeamId = "a", AwayTeamId = "b" },
+            new Fixture { Id = "f2", Group = "A", HomeTeamId = "c", AwayTeamId = "d" });
+        await db.SaveChangesAsync();
+
+        var service = new SnapshotService(db);
+
+        var oldPredictionF1 = Prediction(4, "Final", .6, .2, .2);
+        oldPredictionF1.FixtureId = "f1";
+        var newPredictionF1 = Prediction(4, "Final", .2, .6, .2);
+        newPredictionF1.FixtureId = "f1";
+        newPredictionF1.MostLikelyScore = (1, 1);
+        var predictionF2 = Prediction(4, "Final", .2, .2, .6);
+        predictionF2.FixtureId = "f2";
+
+        await service.SaveMatchAsync(oldPredictionF1);
+        await service.SaveMatchAsync(newPredictionF1);
+        await service.SaveMatchAsync(predictionF2);
+
+        var chips = await service.MatchSnapshotChipsAsync();
+
+        Assert.Equal(2, chips.Count);
+        Assert.True(chips.TryGetValue("f1", out var chipF1));
+        Assert.Equal("1-1", chipF1.ScoreText);
+        Assert.Equal("Draw", chipF1.TopPick);
+        Assert.False(chipF1.IsContextAdjusted);
+
+        Assert.True(chips.TryGetValue("f2", out var chipF2));
+        Assert.Null(chipF2.ScoreText);
+        Assert.Equal("Away", chipF2.TopPick);
+        Assert.False(chipF2.IsContextAdjusted);
+    }
+
+    [Fact]
+    public async Task SnapshotService_MatchSnapshotChips_DetectsContextAdjustedFromModelName()
+    {
+        await using var db = await NewDb();
+        db.Fixtures.Add(new Fixture { Id = "f1", Group = "A", HomeTeamId = "a", AwayTeamId = "b" });
+        await db.SaveChangesAsync();
+
+        var service = new SnapshotService(db);
+
+        var adjusted = Prediction(4, "Oráculo final", .3, .25, .45);
+        adjusted.FixtureId = "f1";
+        adjusted.PredictionIdentity = MatchPrediction.ContextAdjustedPredictionIdentity;
+        await service.SaveMatchAsync(adjusted);
+
+        var chips = await service.MatchSnapshotChipsAsync();
+
+        Assert.Single(chips);
+        Assert.True(chips.TryGetValue("f1", out var chip));
+        Assert.True(chip.IsContextAdjusted);
+    }
+
+    [Fact]
+    public async Task SnapshotService_MatchSnapshotChips_DetectsContextAdjustedFromSignals()
+    {
+        await using var db = await NewDb();
+        db.Teams.AddRange(new Team { Id = "a", Name = "A" }, new Team { Id = "b", Name = "B" });
+        db.Fixtures.Add(new Fixture { Id = "f1", Group = "A", HomeTeamId = "a", AwayTeamId = "b" });
+        await db.SaveChangesAsync();
+
+        var baseline = Prediction(4, "Oráculo final", .45, .35, .20);
+        baseline.FixtureId = "f1";
+        var adjusted = Prediction(4, "Oráculo final", .30, .25, .45);
+        adjusted.FixtureId = "f1";
+        var result = new MatchPredictionResult
+        {
+            Fixture = new Fixture { Id = "f1", HomeTeamId = "a", AwayTeamId = "b" },
+            HomeTeamName = "A",
+            AwayTeamName = "B",
+            Predictions = [adjusted],
+            BestPrediction = adjusted,
+            AdjustmentComparison = new PredictionAdjustmentComparison
+            {
+                BaselinePrediction = baseline,
+                AdjustedPrediction = adjusted,
+                BaselineMethodName = "Oráculo final",
+                AdjustedMethodName = "Oráculo final + contexto API",
+                Signals =
+                [
+                    new PredictionAdjustmentSignal
+                    {
+                        Name = "Disponibilidad de jugadores",
+                        Detail = "Modeled player availability",
+                        Applied = true,
+                        Available = true,
+                        Modeled = true
+                    }
+                ]
+            }
+        };
+
+        var service = new SnapshotService(db);
+        await service.SaveMatchAsync(result);
+
+        var chips = await service.MatchSnapshotChipsAsync();
+
+        Assert.Single(chips);
+        Assert.True(chips.TryGetValue("f1", out var chip));
+        Assert.True(chip.IsContextAdjusted);
+    }
+
+    [Fact]
+    public async Task SnapshotService_MatchSnapshotChips_ExcludesSnapshotsWithoutValidProbabilities()
+    {
+        await using var db = await NewDb();
+        db.Snapshots.Add(new PredictionSnapshot
+        {
+            Kind = "match",
+            FixtureId = "f1",
+            ModelName = "Broken",
+            InputSummaryHash = "broken",
+            PayloadJson = "{}",
+            Explanation = "no probabilities",
+            HomeWin = null,
+            Draw = null,
+            AwayWin = null
+        });
+        await db.SaveChangesAsync();
+
+        var service = new SnapshotService(db);
+        var chips = await service.MatchSnapshotChipsAsync();
+
+        Assert.Empty(chips);
+    }
+
+    [Fact]
+    public async Task SnapshotService_MatchSnapshotChips_UsesTopPickHome()
+    {
+        await using var db = await NewDb();
+        db.Fixtures.Add(new Fixture { Id = "f1", Group = "A", HomeTeamId = "a", AwayTeamId = "b" });
+        await db.SaveChangesAsync();
+
+        var prediction = Prediction(4, "Final", .7, .15, .15);
+        prediction.FixtureId = "f1";
+        var service = new SnapshotService(db);
+        await service.SaveMatchAsync(prediction);
+
+        var chips = await service.MatchSnapshotChipsAsync();
+
+        Assert.True(chips.TryGetValue("f1", out var chip));
+        Assert.Equal("Home", chip.TopPick);
+    }
+
 }

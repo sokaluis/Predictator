@@ -301,6 +301,37 @@ namespace Oloraculo.Web.Services
             return snapshots.Select(ToMatchSummary).ToList();
         }
 
+        public async Task<IReadOnlyDictionary<string, MatchSnapshotChip>> MatchSnapshotChipsAsync(CancellationToken ct = default)
+        {
+            await EnsureSnapshotColumnsAsync(ct);
+
+            var snapshots = await _db.Snapshots
+                .AsNoTracking()
+                .Where(s =>
+                    s.Kind == MatchKind &&
+                    !string.IsNullOrWhiteSpace(s.FixtureId) &&
+                    s.HomeWin.HasValue &&
+                    s.Draw.HasValue &&
+                    s.AwayWin.HasValue)
+                .ToListAsync(ct);
+
+            var result = new Dictionary<string, MatchSnapshotChip>(StringComparer.Ordinal);
+
+            foreach (var group in snapshots.GroupBy(s => s.FixtureId!))
+            {
+                var latest = group
+                    .OrderByDescending(s => s.CreatedAt)
+                    .ThenByDescending(s => s.Id)
+                    .First();
+
+                var chip = ToMatchSnapshotChip(latest);
+                if (chip is not null)
+                    result[chip.FixtureId] = chip;
+            }
+
+            return result;
+        }
+
         public async Task<MatchSnapshotLoadResult> LoadLatestMatchSnapshotAsync(string fixtureId, CancellationToken ct = default)
         {
             var latest = (await MatchSnapshotsAsync(fixtureId, ct: ct)).FirstOrDefault(snapshot => snapshot.IsValid);
@@ -490,6 +521,73 @@ namespace Oloraculo.Web.Services
                 snapshot.InputSummaryHash,
                 snapshot.BatchId,
                 error);
+        }
+
+        private static MatchSnapshotChip? ToMatchSnapshotChip(PredictionSnapshot snapshot)
+        {
+            if (string.IsNullOrWhiteSpace(snapshot.FixtureId))
+                return null;
+
+            var outcome = SnapshotOutcome(snapshot);
+            if (outcome is null)
+                return null;
+
+            var topPick = outcome.Value.TopPick;
+            string? scoreText = null;
+            var isContextAdjusted = string.Equals(
+                snapshot.ModelName,
+                MatchPrediction.ContextAdjustedPredictionIdentity,
+                StringComparison.Ordinal);
+
+            if (!string.IsNullOrWhiteSpace(snapshot.PayloadJson))
+            {
+                try
+                {
+                    using var document = JsonDocument.Parse(snapshot.PayloadJson);
+                    var root = document.RootElement;
+
+                    if (TryGetProperty(root, "MostLikelyScore", out var scoreEl))
+                    {
+                        if (scoreEl.ValueKind == JsonValueKind.Object)
+                        {
+                            if (TryGetProperty(scoreEl, "Home", out var homeEl) && homeEl.TryGetInt32(out var home) &&
+                                TryGetProperty(scoreEl, "Away", out var awayEl) && awayEl.TryGetInt32(out var away))
+                            {
+                                scoreText = $"{home}-{away}";
+                            }
+                        }
+                        else if (scoreEl.ValueKind == JsonValueKind.String)
+                        {
+                            scoreText = scoreEl.GetString();
+                        }
+                    }
+
+                    if (!isContextAdjusted &&
+                        TryGetProperty(root, "AdjustmentComparison", out var adjEl) &&
+                        adjEl.ValueKind == JsonValueKind.Object)
+                    {
+                        if (TryGetProperty(adjEl, "Signals", out var signalsEl) &&
+                            signalsEl.ValueKind == JsonValueKind.Array)
+                        {
+                            foreach (var signal in signalsEl.EnumerateArray())
+                            {
+                                if (ReadBool(signal, "Modeled") == true &&
+                                    ReadBool(signal, "Applied") == true)
+                                {
+                                    isContextAdjusted = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (JsonException)
+                {
+                    // ignore malformed payload — fall back to column-level defaults
+                }
+            }
+
+            return new MatchSnapshotChip(snapshot.FixtureId, scoreText, topPick, isContextAdjusted);
         }
 
         private static FullFixtureSnapshotSummary ToFullFixtureSummary(PredictionSnapshot snapshot, int childCount)
